@@ -1,0 +1,5 @@
+---
+- name: Apply Kubernetes kernel parameters
+  ansible.builtin.command:
+    cmd: sysctl --system
+  become: true

@@ -1,0 +1,16 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+
+localAPIEndpoint:
+  advertiseAddress: "{{ ansible_host }}"
+  bindPort: 6443
+
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+
+kubernetesVersion: "v{{ kubernetes.version }}"
+
+networking:
+  podSubnet: "{{ kubernetes.cluster.pod_network_cidr }}"
+  serviceSubnet: "{{ kubernetes.cluster.service_cidr }}"

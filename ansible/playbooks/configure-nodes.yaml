@@ -1,0 +1,41 @@
+---
+- name: Configure Kubernetes nodes
+  hosts: all
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - common
+    - container_runtime
+    - kubernetes
+
+
+- name: Configure Kubernetes control plane
+  hosts: control_plane
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - control_plane
+    - helm
+    - cni
+
+- name: Join Kubernetes workers
+  hosts: workers
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - worker

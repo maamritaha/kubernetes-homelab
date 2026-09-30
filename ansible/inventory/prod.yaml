@@ -1,0 +1,2 @@
+cluster_config: ../../environments/prod/cluster.yaml
+cluster_vars: ../../environments/prod/vars.yaml

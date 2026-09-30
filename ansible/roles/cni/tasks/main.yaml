@@ -1,0 +1,21 @@
+---
+- name: Add Cilium Helm repository
+  kubernetes.core.helm_repository:
+    name: cilium
+    repo_url: "{{ cni.repository_url }}"
+
+- name: Install Cilium
+  kubernetes.core.helm:
+    name: cilium
+    chart_ref: cilium/cilium
+    chart_version: "{{ cni.version }}"
+    release_namespace: kube-system
+    kubeconfig: /etc/kubernetes/admin.conf
+    values:
+      kubeProxyReplacement: "{{ cni.kube_proxy_replacement }}"
+      ipam:
+        mode: "{{ cni.ipam.mode }}"
+        operator:
+          clusterPoolIPv4PodCIDRList:
+            - "{{ kubernetes.cluster.pod_network_cidr }}"
+    state: present

@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+import subprocess
+import sys
+from pathlib import Path
+
+script_dir = Path(__file__).resolve().parent
+inventory_script = script_dir / "inventory.py"
+
+environment = Path(__file__).name
+environment_config = script_dir / f"{environment}.yaml"
+
+result = subprocess.run(
+    [sys.executable, str(inventory_script), str(environment_config)],
+    check=False
+)
+
+sys.exit(result.returncode)

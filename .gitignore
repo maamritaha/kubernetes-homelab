@@ -1,0 +1,40 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# Terraform variable files that may contain secrets
+*.tfvars
+*.tfvars.json
+
+# Ansible
+*.retry
+.vault_pass
+vault-password*
+
+# Kubernetes
+*.kubeconfig
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+
+# OS / temporary files
+.DS_Store
+*~
+*.swp
