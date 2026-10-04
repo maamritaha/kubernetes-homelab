@@ -13,3 +13,8 @@
     cmd: kubeadm init --config /etc/kubernetes/kubeadm-config.yaml
     creates: /etc/kubernetes/admin.conf
   become: true
+
+- name: Install Kubernetes Python client
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present

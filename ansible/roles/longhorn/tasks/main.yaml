@@ -1,0 +1,87 @@
+---
+- name: Configure Longhorn storage node annotations
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item }}"
+        annotations:
+          node.longhorn.io/default-disks-config: >-
+            [{"path":"{{ hostvars[item].longhorn_storage.path }}","allowScheduling":true}]
+          node.longhorn.io/default-node-tags: '["storage"]'
+  loop: "{{ groups['longhorn_storage'] }}"
+
+- name: Enable Longhorn default disk on storage nodes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item }}"
+        labels:
+          node.longhorn.io/create-default-disk: "config"
+  loop: "{{ groups['longhorn_storage'] }}"
+
+- name: Add Longhorn Helm repository
+  kubernetes.core.helm_repository:
+    name: longhorn
+    repo_url: "{{ longhorn.repository_url }}"
+
+- name: Install Longhorn
+  kubernetes.core.helm:
+    name: longhorn
+    chart_ref: longhorn/longhorn
+    chart_version: "{{ longhorn.version }}"
+    release_namespace: longhorn-system
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    wait: true
+    values:
+      defaultSettings:
+        createDefaultDiskLabeledNodes: true
+        defaultReplicaCount: "{{ [groups['longhorn_storage'] | length, 3] | min }}"
+        taintToleration: "dedicated=longhorn-storage:NoSchedule"
+
+      persistence:
+        defaultClassReplicaCount: "{{ [groups['longhorn_storage'] | length, 3] | min }}"
+        defaultNodeSelector:
+          enable: true
+          selector: "storage"
+
+      global:
+        tolerations:
+          - key: dedicated
+            operator: Equal
+            value: longhorn-storage
+            effect: NoSchedule
+
+- name: Label exclusive Longhorn storage nodes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item }}"
+        labels:
+          node-role.longhorn.io/storage: "true"
+  loop: "{{ groups['longhorn_storage'] }}"
+  when: hostvars[item].longhorn_storage.exclusive | bool
+
+- name: Taint exclusive Longhorn storage nodes
+  kubernetes.core.k8s_taint:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    name: "{{ item }}"
+    taints:
+      - key: dedicated
+        value: longhorn-storage
+        effect: NoSchedule
+  loop: "{{ groups['longhorn_storage'] }}"
+  when: hostvars[item].longhorn_storage.exclusive | bool

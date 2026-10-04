@@ -39,3 +39,28 @@
 
   roles:
     - worker
+
+- name: Configure Longhorn storage nodes
+  hosts: longhorn_storage
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - longhorn_storage
+
+
+- name: Install Longhorn
+  hosts: control_plane
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - longhorn

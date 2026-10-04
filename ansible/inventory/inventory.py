@@ -27,31 +27,42 @@ def build_inventory(cluster_config):
         },
         "workers": {
             "hosts": []
+        },
+        "longhorn_storage": {
+            "hosts": []
         }
+    }
+
+    supported_roles = {
+        "control_plane": "control_plane",
+        "worker": "workers",
+        "longhorn_storage": "longhorn_storage",
     }
 
     for server in cluster_config["servers"]:
         name = server["name"]
         ip_address = server["ip_address"]
-        role = server["role"]
+        roles = server["roles"]
 
-        inventory["_meta"]["hostvars"][name] = {
+        hostvars = {
             "ansible_host": ip_address
         }
 
-        if role == "control_plane":
-            inventory["control_plane"]["hosts"].append(name)
+        if "longhorn_storage" in server:
+            hostvars["longhorn_storage"] = server["longhorn_storage"]
 
-        elif role == "worker":
-            inventory["workers"]["hosts"].append(name)
+        inventory["_meta"]["hostvars"][name] = hostvars
 
-        else:
-            raise ValueError(
-                f"Unsupported server role '{role}' for server '{name}'"
-            )
+        for role in roles:
+            if role not in supported_roles:
+                raise ValueError(
+                    f"Unsupported server role '{role}' for server '{name}'"
+                )
+
+            group = supported_roles[role]
+            inventory[group]["hosts"].append(name)
 
     return inventory
-
 
 def main():
     if len(sys.argv) != 2:

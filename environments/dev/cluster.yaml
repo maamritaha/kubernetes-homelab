@@ -3,12 +3,33 @@ environment: dev
 servers:
   - name: dev-control-plane
     ip_address: 192.168.56.10
-    role: control_plane
+    roles:
+      - control_plane
 
   - name: dev-worker-1
     ip_address: 192.168.56.11
-    role: worker
+    roles:
+      - worker
 
   - name: dev-worker-2
     ip_address: 192.168.56.12
-    role: worker
+    roles:
+      - worker
+
+  - name: dev-storage-1
+    ip_address: 192.168.56.13
+    roles:
+      - worker
+      - longhorn_storage
+    longhorn_storage:
+      path: /var/lib/longhorn
+      exclusive: true
+
+  - name: dev-storage-2
+    ip_address: 192.168.56.14
+    roles:
+      - worker
+      - longhorn_storage
+    longhorn_storage:
+      path: /var/lib/longhorn
+      exclusive: true

@@ -25,3 +25,7 @@ cni:
 
   ipam:
     mode: cluster-pool
+
+longhorn:
+  version: "1.13.0"
+  repository_url: "https://charts.longhorn.io"

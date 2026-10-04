@@ -1,0 +1,34 @@
+---
+- name: Validate Longhorn storage configuration
+  ansible.builtin.assert:
+    that:
+      - longhorn_storage is defined
+      - longhorn_storage.path is defined
+      - longhorn_storage.path | length > 0
+      - longhorn_storage.exclusive is defined
+      - longhorn_storage.exclusive is boolean
+    fail_msg: >-
+      Invalid Longhorn storage configuration for {{ inventory_hostname }}.
+      A storage path and an exclusive boolean value are required.
+
+- name: Create Longhorn storage directory
+  ansible.builtin.file:
+    path: "{{ longhorn_storage.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+
+- name: Install Longhorn node dependencies
+  ansible.builtin.apt:
+    name:
+      - open-iscsi
+      - nfs-common
+    state: present
+
+- name: Ensure iscsid is enabled and running
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
