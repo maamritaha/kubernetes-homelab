@@ -1,0 +1,42 @@
+---
+- name: Get configured Vault password file
+  ansible.builtin.set_fact:
+    vault_password_file_path: >-
+      {{ lookup('ansible.builtin.config', 'DEFAULT_VAULT_PASSWORD_FILE') }}
+  when: cert_manager.private_ca.enabled
+
+- name: Check whether Vault password file exists
+  ansible.builtin.stat:
+    path: "{{ vault_password_file_path }}"
+  register: vault_password_file
+  when: cert_manager.private_ca.enabled
+
+- name: Fail when Vault password file is missing
+  ansible.builtin.fail:
+    msg: >-
+      Ansible Vault password file is missing:
+      {{ vault_password_file_path }}
+  when:
+    - cert_manager.private_ca.enabled
+    - not vault_password_file.stat.exists
+
+- name: Check whether Root CA certificate exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../certificates/{{ cluster_environment }}/root-ca.crt"
+  register: root_ca_certificate
+  when: cert_manager.private_ca.enabled
+
+- name: Check whether encrypted Root CA private key exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../certificates/{{ cluster_environment }}/root-ca.key.vault"
+  register: root_ca_private_key
+  when: cert_manager.private_ca.enabled
+
+- name: Fail when Root CA files are inconsistent
+  ansible.builtin.fail:
+    msg: >-
+      Root CA files are inconsistent for environment '{{ cluster_environment }}'.
+      Both root-ca.crt and root-ca.key.vault must either exist or be absent.
+  when:
+    - cert_manager.private_ca.enabled
+    - root_ca_certificate.stat.exists != root_ca_private_key.stat.exists

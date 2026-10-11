@@ -1,4 +1,9 @@
 ---
+- name: Wait for APT lock
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: "{{ system.apt.lock_timeout }}"
+
 - name: Set system hostname
   ansible.builtin.hostname:
     name: "{{ inventory_hostname }}"
@@ -52,3 +57,5 @@
     mode: "0644"
   become: true
   notify: Apply Kubernetes kernel parameters
+
+

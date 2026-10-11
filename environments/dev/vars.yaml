@@ -1,4 +1,8 @@
 ---
+system:
+  apt:
+    lock_timeout: 300
+
 container_runtime:
   name: containerd
   version: "2.2.2"
@@ -12,6 +16,11 @@ kubernetes:
   cluster:
     pod_network_cidr: "10.244.0.0/16"
     service_cidr: "10.96.0.0/12"
+
+  readiness:
+    timeout: 1800
+    retry_interval: 10
+    warning_after: 300
 
 helm:
   version: "4.3.0"
@@ -29,3 +38,43 @@ cni:
 longhorn:
   version: "1.13.0"
   repository_url: "https://charts.longhorn.io"
+
+  ingress:
+    enabled: true
+    class_name: traefik
+    host: longhorn.dev.homelab
+    tls:
+      enabled: true
+      secret_name: longhorn-tls
+      cluster_issuer: homelab-ca
+
+metallb:
+  version: "0.16.1"
+  repository_url: "https://metallb.github.io/metallb"
+
+  address_pool:
+    name: dev-pool
+    addresses:
+      - "192.168.56.200-192.168.56.220"
+
+  l2_advertisement:
+    interfaces:
+      - enp0s8
+
+traefik:
+  version: "41.6.1"
+  repository_url: "https://traefik.github.io/charts"
+
+  service:
+    type: LoadBalancer
+
+cert_manager:
+  version: "v1.21.2"
+  repository_url: "https://charts.jetstack.io"
+
+  private_ca:
+    enabled: true
+    cluster_issuer_name: homelab-ca
+    secret_name: homelab-root-ca
+    common_name: "Homelab Root CA"
+    validity_days: 3650

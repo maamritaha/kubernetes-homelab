@@ -26,6 +26,7 @@
       - open-iscsi
       - nfs-common
     state: present
+    lock_timeout: "{{ system.apt.lock_timeout }}"
 
 - name: Ensure iscsid is enabled and running
   ansible.builtin.systemd:

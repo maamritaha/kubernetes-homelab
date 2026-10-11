@@ -1,0 +1,50 @@
+---
+- name: Add MetalLB Helm repository
+  kubernetes.core.helm_repository:
+    name: metallb
+    repo_url: "{{ metallb.repository_url }}"
+
+- name: Install MetalLB
+  kubernetes.core.helm:
+    name: metallb
+    chart_ref: metallb/metallb
+    chart_version: "{{ metallb.version }}"
+    release_namespace: metallb-system
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: true
+    values:
+      speaker:
+        frr:
+          enabled: false
+      frrk8s:
+        enabled: false
+
+- name: Configure MetalLB IP address pool
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: "{{ metallb.address_pool.name }}"
+        namespace: metallb-system
+      spec:
+        addresses: "{{ metallb.address_pool.addresses }}"
+
+- name: Configure MetalLB L2 advertisement
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: default
+        namespace: metallb-system
+      spec:
+        ipAddressPools:
+          - "{{ metallb.address_pool.name }}"
+        interfaces: "{{ metallb.l2_advertisement.interfaces }}"

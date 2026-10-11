@@ -4,6 +4,7 @@
     name: "{{ container_runtime.name }}={{ container_runtime.package_version }}"
     state: present
     update_cache: true
+    lock_timeout: "{{ system.apt.lock_timeout }}"
   become: true
 
 - name: Hold containerd package

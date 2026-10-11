@@ -40,6 +40,7 @@
     release_namespace: longhorn-system
     create_namespace: true
     kubeconfig: /etc/kubernetes/admin.conf
+    state: present
     wait: true
     values:
       defaultSettings:
@@ -59,6 +60,15 @@
             operator: Equal
             value: longhorn-storage
             effect: NoSchedule
+
+      ingress:
+        enabled: "{{ longhorn.ingress.enabled }}"
+        ingressClassName: "{{ longhorn.ingress.class_name }}"
+        host: "{{ longhorn.ingress.host }}"
+        tls: "{{ longhorn.ingress.tls.enabled }}"
+        tlsSecret: "{{ longhorn.ingress.tls.secret_name }}"
+        annotations:
+          cert-manager.io/cluster-issuer: "{{ longhorn.ingress.tls.cluster_issuer }}"
 
 - name: Label exclusive Longhorn storage nodes
   kubernetes.core.k8s:

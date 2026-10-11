@@ -12,8 +12,17 @@ crash.*.log
 
 # Ansible
 *.retry
+
+# Private PKI material
+certificates/**/*.crt
+certificates/**/*.key
+certificates/**/*.key.vault
+
+# Ansible Vault password files
 .vault_pass
+.vault-password
 vault-password*
+*.vault-password
 
 # Kubernetes
 *.kubeconfig

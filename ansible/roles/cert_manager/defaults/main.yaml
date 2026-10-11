@@ -1,0 +1,3 @@
+---
+root_ca_directory: >-
+  {{ playbook_dir }}/../../certificates/{{ cluster_environment }}

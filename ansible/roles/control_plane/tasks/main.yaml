@@ -14,7 +14,25 @@
     creates: /etc/kubernetes/admin.conf
   become: true
 
+- name: Create kubectl configuration directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: Configure kubectl for Ansible user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+
 - name: Install Kubernetes Python client
   ansible.builtin.apt:
     name: python3-kubernetes
     state: present
+    lock_timeout: "{{ system.apt.lock_timeout }}"

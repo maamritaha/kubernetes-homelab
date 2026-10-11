@@ -1,0 +1,189 @@
+---
+- name: Add cert-manager Helm repository
+  kubernetes.core.helm_repository:
+    name: jetstack
+    repo_url: "{{ cert_manager.repository_url }}"
+
+- name: Install cert-manager
+  kubernetes.core.helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ cert_manager.version }}"
+    release_namespace: cert-manager
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: true
+    values:
+      crds:
+        enabled: true
+
+- name: Ensure Root CA directory exists
+  ansible.builtin.file:
+    path: "{{ root_ca_directory }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  when: cert_manager.private_ca.enabled
+
+- name: Check whether Root CA certificate exists
+  ansible.builtin.stat:
+    path: "{{ root_ca_directory }}/root-ca.crt"
+  register: root_ca_certificate
+  delegate_to: localhost
+  become: false
+  when: cert_manager.private_ca.enabled
+
+- name: Check whether encrypted Root CA private key exists
+  ansible.builtin.stat:
+    path: "{{ root_ca_directory }}/root-ca.key.vault"
+  register: root_ca_private_key
+  delegate_to: localhost
+  become: false
+  when: cert_manager.private_ca.enabled
+
+- name: Fail when Root CA files are inconsistent
+  ansible.builtin.fail:
+    msg: >-
+      Root CA files are inconsistent for environment '{{ cluster_environment }}'.
+      Both root-ca.crt and root-ca.key.vault must either exist or be absent.
+  when:
+    - cert_manager.private_ca.enabled
+    - root_ca_certificate.stat.exists != root_ca_private_key.stat.exists
+
+- name: Generate Root CA
+  when:
+    - cert_manager.private_ca.enabled
+    - not root_ca_certificate.stat.exists
+    - not root_ca_private_key.stat.exists
+  block:
+    - name: Warn about Root CA generation
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Root CA not found for environment '{{ cluster_environment }}'.
+          A new Root CA will be generated.
+
+    - name: Create temporary directory for Root CA generation
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: homelab-ca-
+      register: root_ca_temp_directory
+      delegate_to: localhost
+      become: false
+
+    - name: Generate Root CA private key
+      community.crypto.openssl_privatekey:
+        path: "{{ root_ca_temp_directory.path }}/root-ca.key"
+        type: RSA
+        size: 4096
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Generate Root CA certificate signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ root_ca_temp_directory.path }}/root-ca.key"
+        common_name: "{{ cert_manager.private_ca.common_name }}"
+        use_common_name_for_san: false
+        basic_constraints:
+          - "CA:TRUE"
+        basic_constraints_critical: true
+        key_usage:
+          - keyCertSign
+          - cRLSign
+        key_usage_critical: true
+      delegate_to: localhost
+      become: false
+      register: root_ca_csr
+
+    - name: Generate Root CA certificate
+      community.crypto.x509_certificate:
+        path: "{{ root_ca_temp_directory.path }}/root-ca.crt"
+        csr_content: "{{ root_ca_csr.csr }}"
+        privatekey_path: "{{ root_ca_temp_directory.path }}/root-ca.key"
+        provider: selfsigned
+        selfsigned_not_after: "+{{ cert_manager.private_ca.validity_days }}d"
+      delegate_to: localhost
+      become: false
+
+    - name: Encrypt Root CA private key with Ansible Vault
+      ansible.builtin.command:
+        argv:
+          - ansible-vault
+          - encrypt
+          - "{{ root_ca_temp_directory.path }}/root-ca.key"
+          - --output
+          - "{{ root_ca_temp_directory.path }}/root-ca.key.vault"
+      environment:
+        ANSIBLE_CONFIG: "{{ lookup('ansible.builtin.config', 'CONFIG_FILE') }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Publish Root CA certificate
+      ansible.builtin.copy:
+        src: "{{ root_ca_temp_directory.path }}/root-ca.crt"
+        dest: "{{ root_ca_directory }}/root-ca.crt"
+        remote_src: true
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Publish encrypted Root CA private key
+      ansible.builtin.copy:
+        src: "{{ root_ca_temp_directory.path }}/root-ca.key.vault"
+        dest: "{{ root_ca_directory }}/root-ca.key.vault"
+        remote_src: true
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+  always:
+    - name: Remove temporary Root CA directory
+      ansible.builtin.file:
+        path: "{{ root_ca_temp_directory.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      when:
+        - root_ca_temp_directory is defined
+        - root_ca_temp_directory.path is defined
+
+- name: Create Root CA Kubernetes Secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ cert_manager.private_ca.secret_name }}"
+        namespace: cert-manager
+      type: kubernetes.io/tls
+      stringData:
+        tls.crt: >-
+          {{ lookup(
+            'ansible.builtin.file',
+            root_ca_directory ~ '/root-ca.crt'
+          ) }}
+        tls.key: >-
+          {{ lookup(
+            'ansible.builtin.unvault',
+            root_ca_directory ~ '/root-ca.key.vault'
+          ) }}
+  no_log: true
+  when: cert_manager.private_ca.enabled
+
+- name: Create Root CA ClusterIssuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager.private_ca.cluster_issuer_name }}"
+      spec:
+        ca:
+          secretName: "{{ cert_manager.private_ca.secret_name }}"
+  when: cert_manager.private_ca.enabled

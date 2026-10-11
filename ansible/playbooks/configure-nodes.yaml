@@ -1,4 +1,19 @@
 ---
+- name: Validate local prerequisites
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - preflight
+
+
 - name: Configure Kubernetes nodes
   hosts: all
   become: true
@@ -28,6 +43,7 @@
     - helm
     - cni
 
+
 - name: Join Kubernetes workers
   hosts: workers
   become: true
@@ -40,6 +56,99 @@
   roles:
     - worker
 
+- name: Wait for Kubernetes cluster readiness
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Wait for all Kubernetes nodes to become ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/kubernetes/admin.conf
+        api_version: v1
+        kind: Node
+      register: kubernetes_nodes
+      until: >
+        kubernetes_nodes.resources | length == groups['all'] | length
+        and
+        (
+          kubernetes_nodes.resources
+          | map(attribute='status.conditions')
+          | flatten
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True')
+          | list
+          | length
+        ) == groups['all'] | length
+      retries: "{{ (kubernetes.readiness.warning_after / kubernetes.readiness.retry_interval) | int }}"
+      delay: "{{ kubernetes.readiness.retry_interval }}"
+      failed_when: false
+      run_once: true
+
+    - name: Warn when Kubernetes cluster startup is taking longer than expected
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Kubernetes cluster is still not ready after
+          {{ kubernetes.readiness.warning_after }} seconds.
+          Temporary network connectivity or slow image pulls may be delaying startup.
+          Waiting up to {{ kubernetes.readiness.timeout }} seconds.
+      when: >
+        not (
+          kubernetes_nodes.resources | length == groups['all'] | length
+          and
+          (
+            kubernetes_nodes.resources
+            | map(attribute='status.conditions')
+            | flatten
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) == groups['all'] | length
+        )
+      run_once: true
+
+    - name: Continue waiting for all Kubernetes nodes to become ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/kubernetes/admin.conf
+        api_version: v1
+        kind: Node
+      register: kubernetes_nodes
+      until: >
+        kubernetes_nodes.resources | length == groups['all'] | length
+        and
+        (
+          kubernetes_nodes.resources
+          | map(attribute='status.conditions')
+          | flatten
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True')
+          | list
+          | length
+        ) == groups['all'] | length
+      retries: >-
+        {{
+          (
+            (kubernetes.readiness.timeout - kubernetes.readiness.warning_after)
+            / kubernetes.readiness.retry_interval
+          ) | int
+        }}
+      delay: "{{ kubernetes.readiness.retry_interval }}"
+      when: >
+        not (
+          kubernetes_nodes.resources | length == groups['all'] | length
+          and
+          (
+            kubernetes_nodes.resources
+            | map(attribute='status.conditions')
+            | flatten
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) == groups['all'] | length
+        )
+      run_once: true
+
+
 - name: Configure Longhorn storage nodes
   hosts: longhorn_storage
   become: true
@@ -51,6 +160,21 @@
 
   roles:
     - longhorn_storage
+
+
+- name: Install Kubernetes platform services
+  hosts: control_plane
+  become: true
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - metallb
+    - traefik
+    - cert_manager
 
 
 - name: Install Longhorn

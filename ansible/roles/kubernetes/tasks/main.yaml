@@ -7,6 +7,7 @@
       - gpg
     state: present
     update_cache: true
+    lock_timeout: "{{ system.apt.lock_timeout }}"
   become: true
 
 - name: Create APT keyrings directory
@@ -53,6 +54,7 @@
 - name: Update APT cache
   ansible.builtin.apt:
     update_cache: true
+    lock_timeout: "{{ system.apt.lock_timeout }}"
   become: true
 
 - name: Install Kubernetes packages
@@ -62,6 +64,7 @@
       - "kubeadm={{ kubernetes.package_version }}"
       - "kubectl={{ kubernetes.package_version }}"
     state: present
+    lock_timeout: "{{ system.apt.lock_timeout }}"
   become: true
 
 - name: Hold Kubernetes packages

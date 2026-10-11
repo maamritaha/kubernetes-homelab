@@ -1,22 +1,14 @@
 # Kubernetes Homelab
 
-A reproducible Kubernetes homelab built with Ansible and designed to be provisioned with Terraform.
+A reproducible Kubernetes homelab configured with Ansible and designed for future infrastructure provisioning with Terraform.
 
-The project focuses on declarative configuration, environment isolation, idempotent automation, persistent storage, and a clear separation between infrastructure and Kubernetes configuration.
+The project emphasizes declarative configuration, environment isolation, idempotent automation, persistent storage, and separation of infrastructure from Kubernetes configuration.
 
 ## Architecture
 
-The homelab supports multiple isolated environments:
+The project supports three independent environments: `dev`, `test`, and `prod`. Each has its own cluster topology and configuration. Only DEV is currently deployed and validated.
 
-- `dev`
-- `test`
-- `prod`
-
-Each environment has its own cluster definition and software configuration.
-
-The current DEV cluster contains:
-
-| Node | IP address | Roles |
+| DEV node | IP address | Roles |
 | --- | --- | --- |
 | `dev-control-plane` | `192.168.56.10` | Control plane |
 | `dev-worker-1` | `192.168.56.11` | Worker |
@@ -24,7 +16,21 @@ The current DEV cluster contains:
 | `dev-storage-1` | `192.168.56.13` | Worker, Longhorn storage |
 | `dev-storage-2` | `192.168.56.14` | Worker, Longhorn storage |
 
-The storage nodes are Kubernetes workers dedicated to persistent storage. They can run Kubernetes system workloads but are protected from regular application workloads using labels and taints.
+Storage nodes are Kubernetes workers dedicated to persistent storage. Labels and taints restrict regular application workloads while allowing required system components.
+
+The platform networking stack is:
+
+```text
+Cilium (pod networking)
+    ↓
+MetalLB (LoadBalancer IPs, Layer 2)
+    ↓
+Traefik (Ingress)
+    ↓
+cert-manager (TLS certificates)
+    ↓
+HTTPS applications (including Longhorn UI)
+```
 
 ## Project Structure
 
@@ -32,37 +38,22 @@ The storage nodes are Kubernetes workers dedicated to persistent storage. They c
 kubernetes-homelab/
 ├── ansible/
 │   ├── inventory/
-│   │   ├── dev
-│   │   ├── dev.yaml
-│   │   ├── inventory.py
-│   │   ├── test
-│   │   ├── test.yaml
-│   │   ├── prod
-│   │   └── prod.yaml
+│   │   └── ...
 │   ├── playbooks/
 │   │   └── configure-nodes.yaml
 │   ├── roles/
-│   │   ├── common/
-│   │   ├── container_runtime/
-│   │   ├── kubernetes/
-│   │   ├── control_plane/
-│   │   ├── worker/
-│   │   ├── helm/
-│   │   ├── cni/
-│   │   ├── longhorn_storage/
-│   │   └── longhorn/
+│   │   └── ...
 │   └── requirements.yaml
 ├── environments/
 │   ├── dev/
 │   │   ├── cluster.yaml
 │   │   └── vars.yaml
 │   ├── test/
-│   │   ├── cluster.yaml
-│   │   └── vars.yaml
+│   │   └── ...
 │   └── prod/
-│       ├── cluster.yaml
-│       └── vars.yaml
-├── terraform/
+│       └── ...
+├── terraform/                 # Planned infrastructure provisioning
+├── certificates/              # Local private CA material (Git-ignored)
 ├── ansible.cfg
 ├── .gitignore
 └── README.md
@@ -70,19 +61,9 @@ kubernetes-homelab/
 
 ## Configuration Model
 
-Each environment is defined by two files with separate responsibilities.
+Each environment separates **cluster topology** (`cluster.yaml`) from **software and deployment settings** (`vars.yaml`). The topology is intended to be shared by Terraform and Ansible, avoiding duplicated server definitions.
 
-### `cluster.yaml`
-
-Defines the infrastructure topology:
-
-- server names
-- IP addresses
-- Kubernetes roles
-- storage roles
-- node-specific storage configuration
-
-Example:
+Example from `environments/dev/cluster.yaml`:
 
 ```yaml
 environment: dev
@@ -93,16 +74,6 @@ servers:
     roles:
       - control_plane
 
-  - name: dev-worker-1
-    ip_address: 192.168.56.11
-    roles:
-      - worker
-
-  - name: dev-worker-2
-    ip_address: 192.168.56.12
-    roles:
-      - worker
-
   - name: dev-storage-1
     ip_address: 192.168.56.13
     roles:
@@ -112,109 +83,34 @@ servers:
       path: /var/lib/longhorn
       exclusive: true
 
-  - name: dev-storage-2
-    ip_address: 192.168.56.14
-    roles:
-      - worker
-      - longhorn_storage
-    longhorn_storage:
-      path: /var/lib/longhorn
-      exclusive: true
-```
-
-The same topology definition is intended to be consumed by both Terraform and Ansible, avoiding duplicated infrastructure information.
-
-### `vars.yaml`
-
-Defines environment-specific software versions and Kubernetes configuration.
-
-Example:
-
-```yaml
-container_runtime:
-  name: containerd
-  version: "2.2.2"
-  package_version: "2.2.2-0ubuntu1.1"
-
-kubernetes:
-  version: "1.36.4"
-  package_version: "1.36.4-1.1"
-  repository_url: "https://pkgs.k8s.io/core:/stable"
-
-  cluster:
-    pod_network_cidr: "10.244.0.0/16"
-    service_cidr: "10.96.0.0/12"
-
-helm:
-  version: "4.3.0"
-  repository_url: "https://get.helm.sh"
-
-cni:
-  name: cilium
-  version: "1.20.2"
-  repository_url: "https://helm.cilium.io/"
-  kube_proxy_replacement: false
-
-  ipam:
-    mode: cluster-pool
-
-longhorn:
-  version: "1.13.0"
-  repository_url: "https://charts.longhorn.io"
+  # ...
 ```
 
 ## Dynamic Ansible Inventory
 
-The Ansible inventory is generated dynamically from the environment's `cluster.yaml`.
-
-For example:
+The Ansible inventory is generated from each environment's `cluster.yaml`:
 
 ```bash
 ansible-inventory -i ansible/inventory/dev --graph
 ```
 
-produces groups based on the roles assigned to each server:
-
-```text
-@all:
-  |--@control_plane:
-  |  |--dev-control-plane
-  |--@workers:
-  |  |--dev-worker-1
-  |  |--dev-worker-2
-  |  |--dev-storage-1
-  |  |--dev-storage-2
-  |--@longhorn_storage:
-  |  |--dev-storage-1
-  |  |--dev-storage-2
-```
-
-This keeps server topology in a single source of truth instead of duplicating IP addresses and roles in the Ansible inventory.
+Groups such as `control_plane`, `workers`, and `longhorn_storage` are derived from server roles. Server IP addresses and roles are not duplicated in the inventory.
 
 ## Prerequisites
 
-Target machines must:
+Target machines must run Ubuntu Server, be reachable over SSH, support Ansible privilege escalation (`become: true`), communicate with other cluster nodes, and access required package and container registries.
 
-- run Ubuntu Server;
-- be reachable from the Ansible control host over SSH;
-- use an Ansible user able to execute privileged tasks with `become: true`;
-- have network connectivity between cluster nodes;
-- have access to the required package repositories.
-
-The Ansible control host requires Ansible and the project collections.
-
-Install the required collections with:
+The Ansible control host requires Ansible and the project's collections:
 
 ```bash
 ansible-galaxy collection install -r ansible/requirements.yaml
 ```
 
-The current project uses:
+The project uses `community.general`, `kubernetes.core`, and `community.crypto`.
 
-- `community.general`
-- `kubernetes.core`
+VM creation, host-only/NAT networking, SSH access, time synchronization, and storage-device preparation are infrastructure prerequisites. Terraform provisioning is planned but not yet implemented.
 
-Infrastructure-level requirements such as VM creation, networking, SSH access, clock synchronization, and storage device preparation are expected to be handled before running the Kubernetes automation.
+For the private certificate authority, the local Ansible Vault password file and encrypted CA material must be available. These secrets are not committed to Git.
 
 ## Deployment
 
@@ -229,298 +125,133 @@ ansible-playbook \
 The playbook configures the cluster in stages:
 
 ```text
-Linux node configuration
+Local preflight validation
         ↓
-containerd
+Linux node configuration and containerd
         ↓
 Kubernetes packages
         ↓
-Control plane initialization
+Control plane initialization and Helm
         ↓
-Helm
+Cilium CNI
         ↓
-Cilium
+Worker and storage-node joins
         ↓
-Worker node join
+Cluster readiness checks (configurable retries and warning)
         ↓
-Longhorn storage node preparation
+Longhorn storage-node prerequisites
         ↓
-Longhorn
+MetalLB → Traefik → cert-manager
+        ↓
+Private CA and ClusterIssuer
+        ↓
+Longhorn installation and HTTPS ingress
 ```
 
-A clean cluster can be bootstrapped from prepared machines with a single Ansible execution.
+The automation is designed to bootstrap prepared machines in one execution. Cluster readiness is checked globally, allowing temporary delays such as slow image downloads. Package installation tasks can wait for temporary APT lock contention.
 
 ## Kubernetes
 
-The Kubernetes deployment is based on `kubeadm`.
+Kubernetes is installed with `kubeadm`. Ansible configures the required Linux kernel settings, swap, containerd, Kubernetes packages, node IPs, control plane, and worker joins. Existing control planes and joined workers are not initialized or joined again on subsequent runs.
 
-Ansible handles:
+## Networking and HTTPS
 
-- required Linux kernel configuration;
-- swap configuration;
-- containerd installation and configuration;
-- Kubernetes repository configuration;
-- `kubelet`, `kubeadm`, and `kubectl` installation;
-- control plane initialization;
-- worker join token generation;
-- automatic worker node joining;
-- node IP configuration.
+**Cilium** provides pod networking using cluster-pool IPAM. `kubeProxyReplacement` is disabled, so Kubernetes Service routing remains the responsibility of `kube-proxy`.
 
-Worker joins are idempotent and are skipped when a node is already part of the cluster.
+**MetalLB** allocates LoadBalancer IPs from the DEV pool `192.168.56.200–192.168.56.220` and advertises them using Layer 2 on the host-only network interface `enp0s8`. FRR is disabled.
 
-## Networking
+**Traefik** provides HTTP/HTTPS ingress. **cert-manager** issues certificates through a private homelab certificate authority and a Kubernetes `ClusterIssuer`.
 
-Cilium is used as the Kubernetes CNI.
+The Longhorn UI is exposed at:
 
-It is installed through Helm after control plane initialization.
-
-The current configuration uses:
-
-```yaml
-cni:
-  name: cilium
-  kube_proxy_replacement: false
-
-  ipam:
-    mode: cluster-pool
+```text
+https://longhorn.dev.homelab
 ```
 
-Cilium runs on regular workers as well as dedicated storage workers so that all Kubernetes nodes retain cluster networking.
+On the host machine, local name resolution must point the hostname to the Traefik LoadBalancer IP, and the homelab root CA must be trusted. For example:
+
+```text
+192.168.56.200 longhorn.dev.homelab
+```
+
+Local DNS and host trust-store management are outside the current Ansible cluster deployment scope. The Longhorn UI does not include authentication by default; restrict access to trusted networks or add authentication before exposing it more broadly.
 
 ## Persistent Storage
 
-Longhorn provides distributed persistent block storage for Kubernetes workloads.
+**Longhorn** provides distributed persistent block storage. Storage nodes are declared with the `longhorn_storage` role in `cluster.yaml`, and their storage path defaults to `/var/lib/longhorn` in DEV.
 
-Storage-capable nodes are declared directly in `cluster.yaml`:
+When `exclusive: true`, a storage node receives a label and the taint `dedicated=longhorn-storage:NoSchedule`, keeping ordinary application workloads off dedicated storage nodes.
 
-```yaml
-roles:
-  - worker
-  - longhorn_storage
+The `longhorn_storage` role creates the configured directory, installs `open-iscsi` and NFS client support, and enables `iscsid`. Longhorn is deployed through Helm, with node configuration managed declaratively through Ansible Kubernetes modules.
 
-longhorn_storage:
-  path: /var/lib/longhorn
-  exclusive: true
-```
-
-### Storage path
-
-Longhorn does not require a dedicated physical disk.
-
-For the current homelab, the storage path is:
-
-```text
-/var/lib/longhorn
-```
-
-If a separate storage device is used, its filesystem and mount point are considered an infrastructure responsibility. Ansible does not partition or format storage devices.
-
-### Dedicated storage nodes
-
-When:
-
-```yaml
-exclusive: true
-```
-
-the node receives a Kubernetes label and taint:
-
-```text
-node-role.longhorn.io/storage=true
-dedicated=longhorn-storage:NoSchedule
-```
-
-This prevents regular application workloads from being scheduled on dedicated storage nodes while allowing required system components to run through appropriate tolerations.
-
-### Longhorn node preparation
-
-The `longhorn_storage` role prepares storage nodes by:
-
-- creating the configured storage directory;
-- installing `open-iscsi`;
-- installing NFS client support;
-- enabling and starting `iscsid`.
-
-### Longhorn deployment
-
-Longhorn is installed through Helm.
-
-Node annotations, labels, and taints are managed declaratively through the `kubernetes.core` Ansible collection.
-
-Only nodes explicitly configured with the `longhorn_storage` role receive Longhorn storage disks.
-
-The default replica count is calculated from the number of available Longhorn storage nodes and capped at three replicas.
-
-For example:
-
-```text
-2 storage nodes → 2 replicas
-3 storage nodes → 3 replicas
-4 storage nodes → 3 replicas
-```
+The default replica count is the smaller of the number of storage nodes and three. DEV has two storage nodes and therefore uses two replicas by default. Preparing, partitioning, and mounting a dedicated physical disk remain infrastructure responsibilities.
 
 ## Persistent Volume Validation
 
-The storage configuration has been validated with Kubernetes dynamic provisioning.
+Dynamic PVC/PV provisioning, data persistence across Pod recreation, and the default `Delete` reclaim policy have been tested successfully.
 
-The tested lifecycle includes:
-
-```text
-PVC
- ↓
-Longhorn StorageClass
- ↓
-Dynamic PV
- ↓
-Longhorn volume
- ↓
-Replicas on storage nodes
- ↓
-Pod volume mount
-```
-
-Persistence was verified by deleting and recreating a Pod while keeping its PVC. The recreated Pod successfully recovered the existing data.
-
-Storage node failure was also tested by abruptly stopping one Longhorn storage VM.
-
-The volume transitioned from:
-
-```text
-healthy
-  ↓
-degraded
-  ↓
-healthy
-```
-
-while the application remained able to access its data through the remaining replica.
-
-After the failed storage node returned, Longhorn automatically restored the volume to a healthy state.
-
-PVC deletion was also validated with the default `Delete` reclaim policy, removing the associated PV and Longhorn volume.
+Storage resilience was also validated by shutting down one storage VM: application data remained accessible through the remaining replica. After the VM restarted, Longhorn detected the returning node and recovered the volume's healthy state.
 
 ## Idempotence
 
-The Ansible automation is designed to be idempotent.
-
-Running the same playbook multiple times does not:
-
-- reinitialize an existing control plane;
-- rejoin existing workers;
-- reinstall existing Helm releases unnecessarily;
-- recreate existing Longhorn configuration;
-- duplicate Kubernetes labels, annotations, or taints.
-
-The complete Kubernetes, Cilium, and Longhorn bootstrap has also been validated from clean VM snapshots using a single Ansible execution.
-
-A subsequent execution converges without modifying Kubernetes or Longhorn resources that are already in the desired state.
+The Ansible automation is designed for repeated execution without reinitializing the control plane, rejoining workers, or recreating resources already in their desired state. Clean-snapshot bootstraps and subsequent convergence have been exercised during development; transient registry connectivity and APT locks are handled through configurable waits where applicable.
 
 ## Environment Isolation
 
-DEV, TEST, and PROD are represented as separate environments:
+DEV, TEST, and PROD are modeled as separate Kubernetes clusters rather than namespaces in a shared cluster.
 
-```text
-environments/
-├── dev/
-├── test/
-└── prod/
-```
-
-Each environment has its own topology and software configuration.
-
-The intended architecture uses separate Kubernetes clusters for each environment rather than namespaces as the primary isolation mechanism.
-
-Example network plan:
-
-| Environment | Network |
+| Environment | Planned network |
 | --- | --- |
 | DEV | `192.168.56.0/24` |
 | TEST | `192.168.57.0/24` |
 | PROD | `192.168.58.0/24` |
 
-Only the DEV cluster is currently deployed and validated.
+Only DEV is currently deployed and validated.
 
 ## Security
 
-Secrets, private SSH keys, kubeconfig files, Terraform state, and other sensitive local files are excluded from version control.
+Private keys, Ansible Vault passwords, kubeconfig files, Terraform state, and other sensitive local files must remain outside version control. The local root CA certificate and its encrypted private key are stored in environment-specific paths and excluded by `.gitignore`.
 
-Privileged access required by Ansible is considered part of the machine provisioning contract and is not configured by this repository.
-
-Production credentials and secrets should be managed using an appropriate secret-management solution rather than committed to the repository.
+The CA is intended for trusted homelab use. Privileged machine access is a provisioning prerequisite, not configured by this repository. Production credentials require an appropriate secret-management solution.
 
 ## Current Status
 
-Implemented:
+Implemented in DEV:
 
-- Multi-environment project structure (`dev`, `test`, `prod`)
-- Shared declarative cluster topology
-- Dynamic Ansible inventory
-- Common Linux node configuration
-- containerd installation and configuration
-- Kubernetes installation with `kubeadm`
-- Control plane initialization
-- Automatic worker joining
-- Helm installation
-- Cilium CNI deployment
-- Longhorn storage node preparation
-- Longhorn deployment through Helm
-- Declarative Longhorn node configuration with `kubernetes.core`
-- Dedicated storage nodes using labels and taints
-- Dynamic Longhorn replica count
-- Dynamic Kubernetes persistent volume provisioning
-- Persistent data validation
-- Longhorn storage-node failure and recovery validation
-- PVC/PV reclaim lifecycle validation
-- Idempotent Kubernetes and Longhorn configuration
-- Single-run bootstrap validated from clean VM snapshots
+- Declarative multi-environment project structure and dynamic Ansible inventory
+- Automated Linux, containerd, Kubernetes, Helm, and Cilium configuration
+- Automatic worker joins and configurable cluster readiness checks
+- MetalLB Layer 2 LoadBalancer networking and Traefik ingress
+- cert-manager with a private CA and HTTPS certificates
+- Longhorn installation, dedicated storage nodes, and HTTPS UI
+- Dynamic volume provisioning, replica persistence, failure/recovery, and reclaim validation
+- Idempotent configuration and clean-snapshot bootstrap testing
 
 ## Roadmap
 
 Planned work includes:
 
-- Terraform infrastructure provisioning
-- Traefik ingress configuration
-- cert-manager
-- Automatic HTTPS certificates
-- Longhorn UI exposure through HTTPS
+- Terraform VM and networking provisioning
 - S3-compatible object storage
 - External Longhorn backup target
-- Application workload deployment
-- Automated Kubernetes and Longhorn cleanup before infrastructure destruction
-- Additional TEST and PROD cluster validation
+- Application workload deployment and CI/CD integration
+- Automated cleanup before infrastructure destruction
+- TEST and PROD cluster validation
 
 ## Design Principles
 
-The project follows a few core principles:
+**Single source of truth:** Infrastructure topology is declared once in `cluster.yaml`.
 
-**Single source of truth**
+**Separation of concerns:** Infrastructure, OS configuration, Kubernetes services, and workloads remain separate responsibilities.
 
-Infrastructure topology is declared once in `cluster.yaml` and consumed by automation.
+**Declarative configuration:** Prefer Ansible modules and Kubernetes APIs over imperative shell commands.
 
-**Separation of concerns**
+**Idempotence:** Repeated executions converge toward the intended state.
 
-Infrastructure provisioning, operating system configuration, Kubernetes configuration, and application deployment remain separate responsibilities.
+**Replaceable infrastructure:** Clusters should be reproducible without depending on manually maintained VM state.
 
-**Declarative configuration**
-
-Kubernetes resources are managed through declarative Ansible modules whenever possible instead of imperative shell commands.
-
-**Idempotence**
-
-Automation can be executed repeatedly and converges toward the desired state.
-
-**Replaceable infrastructure**
-
-The cluster should be reproducible from configuration rather than depending on manually maintained VM state.
-
-**Environment isolation**
-
-DEV, TEST, and PROD are modeled as independent environments.
+**Environment isolation:** DEV, TEST, and PROD are independent environments.
 
 ## AI Assistance
 
-This project is designed and implemented as a personal Kubernetes homelab and learning project.
-
-ChatGPT was used as an assistant for Kubernetes concepts, troubleshooting, code review, and documentation.
-
-The infrastructure architecture, implementation decisions, configuration, testing, and validation remain part of the project development process rather than being generated as an autonomous AI-designed system.
+This is a personal Kubernetes homelab and learning project. ChatGPT has been used to assist with Kubernetes concepts, troubleshooting, code review, and documentation. Architecture decisions, implementation, and validation remain part of the project's development process.
