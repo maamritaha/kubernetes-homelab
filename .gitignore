@@ -34,6 +34,7 @@ vault-password*
 *.pfx
 .env
 .env.*
+/environments/*/secrets/
 
 # Python
 __pycache__/

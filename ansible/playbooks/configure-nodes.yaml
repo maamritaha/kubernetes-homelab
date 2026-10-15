@@ -4,11 +4,15 @@
   connection: local
   gather_facts: false
   become: false
+  tags:
+    - preflight
 
   pre_tasks:
     - name: Load environment variables
       ansible.builtin.include_vars:
         file: "../../environments/{{ cluster_environment }}/vars.yaml"
+      tags:
+        - always
 
   roles:
     - preflight
@@ -188,3 +192,17 @@
 
   roles:
     - longhorn
+
+- name: Install SeaweedFS
+  hosts: control_plane
+  become: true
+  tags:
+    - seaweedfs
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - seaweedfs

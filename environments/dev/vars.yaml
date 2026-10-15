@@ -78,3 +78,55 @@ cert_manager:
     secret_name: homelab-root-ca
     common_name: "Homelab Root CA"
     validity_days: 3650
+
+seaweedfs:
+  version: "4.48.0"
+  repository_url: "https://seaweedfs.github.io/seaweedfs/helm"
+  namespace: seaweedfs
+
+  master:
+    enabled: true
+    replicas: 1
+    data:
+      type: persistentVolumeClaim
+      size: 1Gi
+      storageClass: longhorn
+
+  volume:
+    enabled: true
+    replicas: 1
+    dataDirs:
+      - name: data1
+        type: persistentVolumeClaim
+        size: 10Gi
+        storageClass: longhorn
+        maxVolumes: 0
+
+  filer:
+    enabled: true
+    replicas: 1
+    defaultReplicaPlacement: "000"
+    data:
+      type: persistentVolumeClaim
+      size: 5Gi
+      storageClass: longhorn
+
+  s3:
+    enabled: true
+    replicas: 1
+    enableAuth: true
+
+  ingress:
+    enabled: true
+    class_name: traefik
+    tls:
+      enabled: true
+      cluster_issuer: homelab-ca
+
+    master:
+      host: seaweedfs.dev.homelab
+      secret_name: seaweedfs-master-tls
+
+    filer:
+      host: filer.dev.homelab
+      secret_name: seaweedfs-filer-tls

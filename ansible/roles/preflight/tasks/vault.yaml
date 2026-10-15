@@ -1,0 +1,30 @@
+---
+- name: Get configured Vault password file
+  ansible.builtin.set_fact:
+    vault_password_file_path: >-
+      {{ lookup('ansible.builtin.config', 'DEFAULT_VAULT_PASSWORD_FILE') }}
+  when: >-
+    cert_manager.private_ca.enabled
+    or
+    (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+
+- name: Check whether Vault password file exists
+  ansible.builtin.stat:
+    path: "{{ vault_password_file_path }}"
+  register: vault_password_file
+  when: >-
+    cert_manager.private_ca.enabled
+    or
+    (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+
+- name: Fail when Vault password file is missing
+  ansible.builtin.fail:
+    msg: >-
+      Ansible Vault password file is missing:
+      {{ vault_password_file_path }}
+  when:
+    - >-
+      cert_manager.private_ca.enabled
+      or
+      (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+    - not vault_password_file.stat.exists

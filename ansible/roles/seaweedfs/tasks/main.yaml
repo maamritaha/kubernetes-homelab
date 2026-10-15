@@ -1,0 +1,32 @@
+---
+- name: Configure SeaweedFS S3 credentials
+  ansible.builtin.import_tasks: secrets.yaml
+
+- name: Install SeaweedFS
+  kubernetes.core.helm:
+    name: seaweedfs
+    chart_ref: seaweedfs
+    chart_repo_url: "{{ seaweedfs.repository_url }}"
+    chart_version: "{{ seaweedfs.version }}"
+    release_namespace: "{{ seaweedfs.namespace }}"
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: true
+    timeout: 10m0s
+    values:
+      master: "{{ seaweedfs.master }}"
+      volume: "{{ seaweedfs.volume }}"
+      filer: "{{ seaweedfs.filer }}"
+      s3: >-
+        {{
+          seaweedfs.s3
+          | combine(
+              {'existingConfigSecret': 'seaweedfs-s3-config'}
+              if (seaweedfs.s3.enabled | bool and seaweedfs.s3.enableAuth | bool)
+              else {}
+            )
+        }}
+        
+- name: Configure SeaweedFS ingress
+  ansible.builtin.import_tasks: ingress.yaml

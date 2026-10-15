@@ -1,0 +1,50 @@
+---
+- name: Configure SeaweedFS web interfaces
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: "seaweedfs-{{ item.name }}"
+        namespace: "{{ seaweedfs.namespace }}"
+        annotations: >-
+          {{
+            {'cert-manager.io/cluster-issuer': seaweedfs.ingress.tls.cluster_issuer}
+            if (seaweedfs.ingress.tls.enabled | bool)
+            else {}
+          }}
+      spec:
+        ingressClassName: "{{ seaweedfs.ingress.class_name }}"
+        rules:
+          - host: "{{ item.host }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: "{{ item.service }}"
+                      port:
+                        number: "{{ item.port }}"
+        tls: >-
+          {{
+            [{'hosts': [item.host], 'secretName': item.secret_name}]
+            if (seaweedfs.ingress.tls.enabled | bool)
+            else []
+          }}
+  loop:
+    - name: master
+      host: "{{ seaweedfs.ingress.master.host }}"
+      service: seaweedfs-master
+      port: 9333
+      secret_name: "{{ seaweedfs.ingress.master.secret_name }}"
+    - name: filer
+      host: "{{ seaweedfs.ingress.filer.host }}"
+      service: seaweedfs-filer
+      port: 8888
+      secret_name: "{{ seaweedfs.ingress.filer.secret_name }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when: seaweedfs.ingress.enabled | bool
