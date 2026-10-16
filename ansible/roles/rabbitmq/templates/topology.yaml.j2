@@ -1,0 +1,80 @@
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-admin"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  tags:
+    - administrator
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"
+  importCredentialsSecret:
+    name: "{{ rabbitmq.infrastructure.users.admin.secret_name }}"
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-airflow"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  tags: []
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"
+  importCredentialsSecret:
+    name: "{{ rabbitmq.infrastructure.users.airflow.secret_name }}"
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Vhost
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-airflow"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  name: "{{ rabbitmq.infrastructure.users.airflow.vhost }}"
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-admin-root"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  vhost: "/"
+  user: "{{ rabbitmq.infrastructure.users.admin.username }}"
+  permissions:
+    configure: ".*"
+    write: ".*"
+    read: ".*"
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-admin-airflow"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  vhost: "{{ rabbitmq.infrastructure.users.airflow.vhost }}"
+  user: "{{ rabbitmq.infrastructure.users.admin.username }}"
+  permissions:
+    configure: ".*"
+    write: ".*"
+    read: ".*"
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}-airflow"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  vhost: "{{ rabbitmq.infrastructure.users.airflow.vhost }}"
+  user: "{{ rabbitmq.infrastructure.users.airflow.username }}"
+  permissions:
+    configure: ".*"
+    write: ".*"
+    read: ".*"
+  rabbitmqClusterReference:
+    name: "{{ rabbitmq.infrastructure.name }}"

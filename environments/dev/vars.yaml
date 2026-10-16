@@ -192,3 +192,41 @@ postgresql:
       database: airflow
       username: airflow
       secret_name: postgres-infra-airflow
+
+rabbitmq:
+  namespace: messaging
+
+  operators:
+    cluster:
+      version: "v2.23.1"
+      manifest_url: "https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.1/cluster-operator.yml"
+
+    topology:
+      version: "v1.20.2"
+      manifest_url: "https://github.com/rabbitmq/messaging-topology-operator/releases/download/v1.20.2/messaging-topology-operator-with-certmanager.yaml"
+
+  infrastructure:
+    name: rabbitmq-infra
+    replicas: 1
+
+    storage:
+      storage_class: longhorn
+      size: 5Gi
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+    users:
+      admin:
+        username: admin
+        secret_name: rabbitmq-infra-admin
+
+      airflow:
+        username: airflow
+        secret_name: rabbitmq-infra-airflow
+        vhost: /airflow

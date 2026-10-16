@@ -7,6 +7,7 @@
     cert_manager.private_ca.enabled
     or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
     or postgresql is defined
+    or rabbitmq is defined
 
 - name: Check whether Vault password file exists
   ansible.builtin.stat:
@@ -16,6 +17,7 @@
     cert_manager.private_ca.enabled
     or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
     or postgresql is defined
+    or rabbitmq is defined
 
 - name: Fail when Vault password file is missing
   ansible.builtin.fail:
@@ -27,4 +29,5 @@
       cert_manager.private_ca.enabled
       or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
       or postgresql is defined
+      or rabbitmq is defined
     - not vault_password_file.stat.exists

@@ -234,3 +234,32 @@
 
   roles:
     - postgresql
+
+- name: Install RabbitMQ Operators
+  hosts: control_plane
+  become: true
+  tags:
+    - rabbitmq
+    - rabbitmq_operator
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - rabbitmq_operator
+
+- name: Deploy RabbitMQ infrastructure
+  hosts: control_plane
+  become: true
+  tags:
+    - rabbitmq
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - rabbitmq

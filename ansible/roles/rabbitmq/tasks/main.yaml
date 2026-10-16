@@ -1,0 +1,85 @@
+---
+- name: Create RabbitMQ namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ rabbitmq.namespace }}"
+
+- name: Deploy RabbitMQ infrastructure cluster
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition: "{{ lookup('template', 'cluster.yaml.j2') | from_yaml }}"
+
+- name: Wait for RabbitMQ infrastructure cluster
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: rabbitmq.com/v1beta1
+    kind: RabbitmqCluster
+    name: "{{ rabbitmq.infrastructure.name }}"
+    namespace: "{{ rabbitmq.namespace }}"
+  register: rabbitmq_cluster_status
+  until: >-
+    rabbitmq_cluster_status.resources | length > 0
+    and
+    (
+      rabbitmq_cluster_status.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'AllReplicasReady')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) > 0
+  retries: 120
+  delay: 5
+
+- name: Configure RabbitMQ credentials
+  ansible.builtin.import_tasks: credentials.yaml
+
+- name: Deploy RabbitMQ topology
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'topology.yaml.j2') | from_yaml_all | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+- name: Wait for RabbitMQ topology resources
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: rabbitmq.com/v1beta1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ rabbitmq.namespace }}"
+  loop:
+    - kind: User
+      name: "{{ rabbitmq.infrastructure.name }}-admin"
+    - kind: User
+      name: "{{ rabbitmq.infrastructure.name }}-airflow"
+    - kind: Vhost
+      name: "{{ rabbitmq.infrastructure.name }}-airflow"
+    - kind: Permission
+      name: "{{ rabbitmq.infrastructure.name }}-admin-root"
+    - kind: Permission
+      name: "{{ rabbitmq.infrastructure.name }}-admin-airflow"
+    - kind: Permission
+      name: "{{ rabbitmq.infrastructure.name }}-airflow"
+  register: rabbitmq_topology_status
+  until: >-
+    rabbitmq_topology_status.resources | length > 0
+    and
+    (
+      rabbitmq_topology_status.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) > 0
+  retries: 60
+  delay: 5

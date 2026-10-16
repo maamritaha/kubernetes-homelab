@@ -1,0 +1,20 @@
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: "{{ rabbitmq.infrastructure.name }}"
+  namespace: "{{ rabbitmq.namespace }}"
+spec:
+  replicas: {{ rabbitmq.infrastructure.replicas }}
+
+  persistence:
+    storageClassName: "{{ rabbitmq.infrastructure.storage.storage_class }}"
+    storage: "{{ rabbitmq.infrastructure.storage.size }}"
+
+  resources:
+    requests:
+      cpu: "{{ rabbitmq.infrastructure.resources.requests.cpu }}"
+      memory: "{{ rabbitmq.infrastructure.resources.requests.memory }}"
+    limits:
+      cpu: "{{ rabbitmq.infrastructure.resources.limits.cpu }}"
+      memory: "{{ rabbitmq.infrastructure.resources.limits.memory }}"

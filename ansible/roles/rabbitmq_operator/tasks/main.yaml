@@ -1,0 +1,64 @@
+---
+- name: Ensure RabbitMQ operator namespace exists
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: rabbitmq-system
+
+- name: Install RabbitMQ Cluster Operator
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition: >-
+      {{
+        lookup('url', rabbitmq.operators.cluster.manifest_url, split_lines=False)
+        | from_yaml_all
+        | rejectattr('kind', 'equalto', 'Namespace')
+        | list
+      }}
+
+- name: Wait for RabbitMQ Cluster Operator
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: Deployment
+    name: rabbitmq-cluster-operator
+    namespace: rabbitmq-system
+  register: rabbitmq_cluster_operator
+  until: >-
+    rabbitmq_cluster_operator.resources | length > 0
+    and
+    (rabbitmq_cluster_operator.resources[0].status.availableReplicas | default(0) | int) >= 1
+  retries: 60
+  delay: 5
+
+- name: Install RabbitMQ Messaging Topology Operator
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition: >-
+      {{
+        lookup('url', rabbitmq.operators.topology.manifest_url, split_lines=False)
+        | from_yaml_all
+        | rejectattr('kind', 'equalto', 'Namespace')
+        | list
+      }}
+
+- name: Wait for RabbitMQ Messaging Topology Operator
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: Deployment
+    name: messaging-topology-operator
+    namespace: rabbitmq-system
+  register: rabbitmq_topology_operator
+  until: >-
+    rabbitmq_topology_operator.resources | length > 0
+    and
+    (rabbitmq_topology_operator.resources[0].status.availableReplicas | default(0) | int) >= 1
+  retries: 60
+  delay: 5
