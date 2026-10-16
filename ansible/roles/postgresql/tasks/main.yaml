@@ -1,0 +1,132 @@
+---
+- name: Load PostgreSQL credentials
+  ansible.builtin.import_tasks: credentials.yaml
+
+- name: Create PostgreSQL namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ postgresql.namespace }}"
+
+- name: Create PostgreSQL superuser Secret
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ postgresql.infrastructure.superuser.secret_name }}"
+        namespace: "{{ postgresql.namespace }}"
+        labels:
+          cnpg.io/reload: "true"
+      type: kubernetes.io/basic-auth
+      stringData:
+        username: postgres
+        password: "{{ postgresql_superuser_password }}"
+  when: postgresql.infrastructure.superuser.enabled | bool
+  no_log: true
+
+- name: Create Airflow PostgreSQL Secret
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ postgresql.infrastructure.airflow.secret_name }}"
+        namespace: "{{ postgresql.namespace }}"
+        labels:
+          cnpg.io/reload: "true"
+      type: kubernetes.io/basic-auth
+      stringData:
+        username: "{{ postgresql.infrastructure.airflow.username }}"
+        password: "{{ postgresql_airflow_password }}"
+  no_log: true
+
+- name: Deploy PostgreSQL infrastructure cluster
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition: "{{ lookup('template', 'cluster.yaml.j2') | from_yaml }}"
+
+- name: Create Airflow PostgreSQL role
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: DatabaseRole
+      metadata:
+        name: "{{ postgresql.infrastructure.name }}-airflow"
+        namespace: "{{ postgresql.namespace }}"
+      spec:
+        cluster:
+          name: "{{ postgresql.infrastructure.name }}"
+        name: "{{ postgresql.infrastructure.airflow.username }}"
+        ensure: present
+        login: true
+        inherit: true
+        superuser: false
+        createdb: false
+        createrole: false
+        connectionLimit: -1
+        databaseRoleReclaimPolicy: retain
+        passwordSecret:
+          name: "{{ postgresql.infrastructure.airflow.secret_name }}"
+
+- name: Create Airflow PostgreSQL database
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Database
+      metadata:
+        name: "{{ postgresql.infrastructure.name }}-airflow"
+        namespace: "{{ postgresql.namespace }}"
+      spec:
+        cluster:
+          name: "{{ postgresql.infrastructure.name }}"
+        name: "{{ postgresql.infrastructure.airflow.database }}"
+        owner: "{{ postgresql.infrastructure.airflow.username }}"
+        databaseReclaimPolicy: retain
+
+- name: Wait for PostgreSQL cluster to be ready
+  kubernetes.core.k8s_info:
+    api_version: postgresql.cnpg.io/v1
+    kind: Cluster
+    name: "{{ postgresql.infrastructure.name }}"
+    namespace: "{{ postgresql.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: 600
+    wait_sleep: 5
+  register: postgresql_cluster_status
+
+
+- name: Wait for Airflow PostgreSQL resources to be applied
+  kubernetes.core.k8s_info:
+    api_version: postgresql.cnpg.io/v1
+    kind: "{{ item }}"
+    name: "{{ postgresql.infrastructure.name }}-airflow"
+    namespace: "{{ postgresql.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: airflow_postgresql_resources
+  until: >-
+    airflow_postgresql_resources.resources | length > 0
+    and
+    (airflow_postgresql_resources.resources[0].status.applied | default(false) | bool)
+  retries: 60
+  delay: 5
+  loop:
+    - DatabaseRole
+    - Database

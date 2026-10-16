@@ -22,7 +22,9 @@ servers:
       - worker
       - longhorn_storage
     longhorn_storage:
-      path: /var/lib/longhorn
+      paths:
+        - /var/lib/longhorn
+        - /mnt/longhorn-data
       exclusive: true
 
   - name: dev-storage-2
@@ -31,5 +33,7 @@ servers:
       - worker
       - longhorn_storage
     longhorn_storage:
-      path: /var/lib/longhorn
+      paths:
+        - /var/lib/longhorn
+        - /mnt/longhorn-data
       exclusive: true

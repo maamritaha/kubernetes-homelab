@@ -5,8 +5,8 @@
       {{ lookup('ansible.builtin.config', 'DEFAULT_VAULT_PASSWORD_FILE') }}
   when: >-
     cert_manager.private_ca.enabled
-    or
-    (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+    or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+    or postgresql is defined
 
 - name: Check whether Vault password file exists
   ansible.builtin.stat:
@@ -14,8 +14,8 @@
   register: vault_password_file
   when: >-
     cert_manager.private_ca.enabled
-    or
-    (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+    or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+    or postgresql is defined
 
 - name: Fail when Vault password file is missing
   ansible.builtin.fail:
@@ -25,6 +25,6 @@
   when:
     - >-
       cert_manager.private_ca.enabled
-      or
-      (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+      or (seaweedfs.s3.enabled and seaweedfs.s3.enableAuth)
+      or postgresql is defined
     - not vault_password_file.stat.exists

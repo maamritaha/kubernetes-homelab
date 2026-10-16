@@ -3,22 +3,70 @@
   ansible.builtin.assert:
     that:
       - longhorn_storage is defined
-      - longhorn_storage.path is defined
-      - longhorn_storage.path | length > 0
+      - longhorn_storage.paths is defined
+      - longhorn_storage.paths is sequence
+      - longhorn_storage.paths is not string
+      - longhorn_storage.paths | length > 0
+      - longhorn_storage.paths | select('string') | list | length == longhorn_storage.paths | length
+      - longhorn_storage.paths | reject('equalto', '') | list | length == longhorn_storage.paths | length
+      - longhorn_storage.paths | unique | list | length == longhorn_storage.paths | length
       - longhorn_storage.exclusive is defined
       - longhorn_storage.exclusive is boolean
     fail_msg: >-
       Invalid Longhorn storage configuration for {{ inventory_hostname }}.
-      A storage path and an exclusive boolean value are required.
+      A non-empty list of unique storage paths and an exclusive boolean are required.
 
-- name: Create Longhorn storage directory
-  ansible.builtin.file:
-    path: "{{ longhorn_storage.path }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+- name: Check Longhorn storage paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ longhorn_storage.paths }}"
+  register: longhorn_storage_path_checks
 
+- name: Validate Longhorn storage paths
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: >-
+      Longhorn storage path {{ item.item }} is missing
+      or is not a directory on {{ inventory_hostname }}.
+  loop: "{{ longhorn_storage_path_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Identify filesystem for each Longhorn storage path
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --target
+      - "{{ item }}"
+      - --noheadings
+      - --output
+      - TARGET,SOURCE,FSTYPE
+  loop: "{{ longhorn_storage.paths }}"
+  register: longhorn_storage_filesystems
+  changed_when: false
+
+- name: Validate Longhorn storage filesystem availability
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      No accessible filesystem found for Longhorn storage path
+      {{ item.item }} on {{ inventory_hostname }}.
+  loop: "{{ longhorn_storage_filesystems.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Validate Longhorn storage directory permissions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/test
+      - -w
+      - "{{ item }}"
+  loop: "{{ longhorn_storage.paths }}"
+  changed_when: false
 
 - name: Install Longhorn node dependencies
   ansible.builtin.apt:

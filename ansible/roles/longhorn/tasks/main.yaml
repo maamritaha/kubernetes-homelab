@@ -10,7 +10,11 @@
         name: "{{ item }}"
         annotations:
           node.longhorn.io/default-disks-config: >-
-            [{"path":"{{ hostvars[item].longhorn_storage.path }}","allowScheduling":true}]
+            {{ hostvars[item].longhorn_storage.paths
+               | map('community.general.dict_kv', 'path')
+               | map('combine', {'allowScheduling': true})
+               | list
+               | to_json }}
           node.longhorn.io/default-node-tags: '["storage"]'
   loop: "{{ groups['longhorn_storage'] }}"
 

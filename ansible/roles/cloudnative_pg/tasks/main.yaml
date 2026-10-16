@@ -1,0 +1,25 @@
+---
+- name: Add CloudNativePG Helm repository
+  kubernetes.core.helm_repository:
+    name: cnpg
+    repo_url: "{{ cloudnative_pg.repository_url }}"
+
+- name: Deploy CloudNativePG operator
+  kubernetes.core.helm:
+    name: cloudnative-pg
+    chart_ref: cnpg/cloudnative-pg
+    chart_version: "{{ cloudnative_pg.version }}"
+    release_namespace: "{{ cloudnative_pg.namespace }}"
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    update_repo_cache: true
+    wait: true
+    timeout: 5m0s
+    values:
+      replicaCount: "{{ cloudnative_pg.replicaCount }}"
+      crds: "{{ cloudnative_pg.crds }}"
+      config: "{{ cloudnative_pg.config }}"
+      webhook: "{{ cloudnative_pg.webhook }}"
+      rbac: "{{ cloudnative_pg.rbac }}"
+      resources: "{{ cloudnative_pg.resources }}"
+      monitoring: "{{ cloudnative_pg.monitoring }}"

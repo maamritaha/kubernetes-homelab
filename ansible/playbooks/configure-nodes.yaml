@@ -206,3 +206,31 @@
 
   roles:
     - seaweedfs
+
+- name: Install CloudNativePG
+  hosts: control_plane
+  become: true
+  tags:
+    - cloudnative_pg
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - cloudnative_pg
+
+- name: Deploy PostgreSQL infrastructure
+  hosts: control_plane
+  become: true
+  tags:
+    - postgresql
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - postgresql

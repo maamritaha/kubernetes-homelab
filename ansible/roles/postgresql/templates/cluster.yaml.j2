@@ -1,0 +1,27 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: "{{ postgresql.infrastructure.name }}"
+  namespace: "{{ postgresql.namespace }}"
+spec:
+  instances: {{ postgresql.infrastructure.instances }}
+  imageName: "{{ postgresql.infrastructure.image }}"
+
+  enableSuperuserAccess: {{ postgresql.infrastructure.superuser.enabled | bool | lower }}
+{% if postgresql.infrastructure.superuser.enabled | bool %}
+  superuserSecret:
+    name: "{{ postgresql.infrastructure.superuser.secret_name }}"
+{% endif %}
+
+  storage:
+    storageClass: "{{ postgresql.infrastructure.storage.storage_class }}"
+    size: "{{ postgresql.infrastructure.storage.size }}"
+
+  resources:
+    requests:
+      cpu: "{{ postgresql.infrastructure.resources.requests.cpu }}"
+      memory: "{{ postgresql.infrastructure.resources.requests.memory }}"
+    limits:
+      cpu: "{{ postgresql.infrastructure.resources.limits.cpu }}"
+      memory: "{{ postgresql.infrastructure.resources.limits.memory }}"
