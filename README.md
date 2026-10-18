@@ -226,15 +226,15 @@ Implemented in DEV:
 - Longhorn installation, dedicated storage nodes, and HTTPS UI
 - Dynamic volume provisioning, replica persistence, failure/recovery, and reclaim validation
 - Idempotent configuration and clean-snapshot bootstrap testing
-
+- S3-compatible object storage
+- Application workload deployment and CI/CD integration
+- 
 ## Roadmap
 
 Planned work includes:
 
 - Terraform VM and networking provisioning
-- S3-compatible object storage
 - External Longhorn backup target
-- Application workload deployment and CI/CD integration
 - Automated cleanup before infrastructure destruction
 - TEST and PROD cluster validation
 

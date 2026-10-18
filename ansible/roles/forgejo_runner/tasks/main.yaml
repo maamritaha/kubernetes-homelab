@@ -1,0 +1,107 @@
+---
+- name: Load Forgejo Runner credentials
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/forgejo-runner.yaml.vault"
+  no_log: true
+
+- name: Validate Forgejo Runner configuration
+  ansible.builtin.assert:
+    that:
+      - forgejo_runner is defined
+      - forgejo_runner_secret is defined
+      - forgejo_runner_secret is match('^[0-9a-fA-F]{40}$')
+      - forgejo_runner.capacity | int > 0
+    quiet: true
+  no_log: true
+
+- name: Create Forgejo Runner namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ forgejo_runner.namespace }}"
+
+- name: Create Forgejo Runner resource quota
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition: "{{ lookup('template', 'resource-quota.yaml.j2') | from_yaml }}"
+
+- name: Create Forgejo Runner limit range
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition: "{{ lookup('template', 'limit-range.yaml.j2') | from_yaml }}"
+
+- name: Register Forgejo Runner
+  ansible.builtin.import_tasks: register.yaml
+
+- name: Add Forgejo Runner Helm repository
+  kubernetes.core.helm_repository:
+    name: "{{ forgejo_runner.helm.repository.name }}"
+    repo_url: "{{ forgejo_runner.helm.repository.url }}"
+    state: present
+
+- name: Configure Forgejo Runner CA
+  ansible.builtin.import_tasks: ca-configmap.yaml
+  tags:
+    - forgejo_runner
+
+- name: Configure Forgejo Runner Helm post-renderer
+  ansible.builtin.import_tasks: post-renderer.yaml
+  tags:
+    - forgejo_runner
+
+- name: Compute Forgejo Runner post-renderer checksum
+  ansible.builtin.set_fact:
+    forgejo_runner_post_renderer_checksum: >-
+      {{
+        (
+          lookup('file', role_path ~ '/files/post-renderer/buildkit-apparmor.yaml')
+          ~ lookup('file', role_path ~ '/files/post-renderer/runner-ca.yaml')
+          ~ lookup('file', role_path ~ '/files/post-renderer/post-renderer.sh')
+          ~ lookup('file', role_path ~ '/files/post-renderer/plugin.yaml')
+        ) | hash('sha256')
+      }}
+
+- name: Install Forgejo Runner Helm chart
+  kubernetes.core.helm:
+    name: "{{ forgejo_runner.helm.release_name }}"
+    chart_ref: "{{ forgejo_runner.helm.chart_ref }}"
+    chart_version: "{{ forgejo_runner.helm.version }}"
+    release_namespace: "{{ forgejo_runner.namespace }}"
+    release_state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    update_repo_cache: true
+    wait: true
+    timeout: 900s
+    post_renderer: forgejo-runner-postrenderer
+    release_values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+  no_log: true
+
+- name: Get Forgejo Runner deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ forgejo_runner.namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/instance={{ forgejo_runner.helm.release_name }}"
+  register: forgejo_runner_deployments
+
+- name: Validate Forgejo Runner deployment
+  ansible.builtin.assert:
+    that:
+      - forgejo_runner_deployments.resources | length > 0
+      - >-
+        (
+          forgejo_runner_deployments.resources
+          | map(attribute='status.availableReplicas', default=0)
+          | map('int')
+          | sum
+        ) >= 1
+    fail_msg: "Forgejo Runner deployment is not available"
+    quiet: true

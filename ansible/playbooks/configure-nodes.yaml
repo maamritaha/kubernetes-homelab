@@ -263,3 +263,43 @@
 
   roles:
     - rabbitmq
+
+- name: Configure Forgejo BuildKit AppArmor on workers
+  hosts: workers
+  become: true
+  tags:
+    - forgejo_apparmor
+
+  tasks:
+    - name: Install Forgejo BuildKit AppArmor
+      ansible.builtin.import_role:
+        name: forgejo_runner
+        tasks_from: apparmor
+
+- name: Deploy Forgejo
+  hosts: control_plane
+  become: true
+  tags:
+    - forgejo
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - forgejo
+
+- name: Deploy Forgejo Runner
+  hosts: control_plane
+  become: true
+  tags:
+    - forgejo_runner
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - forgejo_runner

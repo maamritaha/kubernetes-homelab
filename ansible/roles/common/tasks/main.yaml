@@ -58,4 +58,12 @@
   become: true
   notify: Apply Kubernetes kernel parameters
 
+- name: Install NFS client for Longhorn RWX volumes
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
 

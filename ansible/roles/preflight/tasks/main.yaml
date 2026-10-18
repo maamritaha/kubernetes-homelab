@@ -7,3 +7,8 @@
 
 - name: Prepare application secrets
   ansible.builtin.import_tasks: secrets.yaml
+
+- name: Initialize Forgejo Runner credentials
+  ansible.builtin.import_tasks: forgejo-runner.yaml
+  tags:
+    - forgejo_runner

@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgejo-runner-forge-runner
+  namespace: forgejo-ci
+spec:
+  template:
+    spec:
+      volumes:
+        - name: homelab-root-ca
+          configMap:
+            name: homelab-root-ca
+            defaultMode: 0444
+
+      containers:
+        - name: runner
+          volumeMounts:
+            - name: homelab-root-ca
+              mountPath: /etc/ssl/homelab
+              readOnly: true

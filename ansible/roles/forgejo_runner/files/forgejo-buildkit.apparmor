@@ -1,0 +1,15 @@
+#include <tunables/global>
+
+profile forgejo-buildkit flags=(attach_disconnected) {
+    file,
+    network,
+    capability,
+    mount,
+    umount,
+    pivot_root,
+    userns,
+
+    deny /sys/kernel/security/** rwklx,
+    deny /proc/sysrq-trigger rwklx,
+    deny /proc/kcore r,
+}

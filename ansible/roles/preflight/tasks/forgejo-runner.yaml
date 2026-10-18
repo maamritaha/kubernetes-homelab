@@ -1,0 +1,63 @@
+---
+- name: Define Forgejo Runner Vault path
+  ansible.builtin.set_fact:
+    forgejo_runner_vault_path: >-
+      {{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/forgejo-runner.yaml.vault
+
+- name: Check Forgejo Runner Vault file
+  ansible.builtin.stat:
+    path: "{{ forgejo_runner_vault_path }}"
+  register: forgejo_runner_vault_stat
+
+- name: Generate Forgejo Runner secret
+  ansible.builtin.set_fact:
+    generated_forgejo_runner_secret: >-
+      {{
+        lookup(
+          'ansible.builtin.password',
+          '/dev/null',
+          length=40,
+          chars=['0123456789abcdef']
+        )
+      }}
+  when: not forgejo_runner_vault_stat.stat.exists
+  no_log: true
+
+- name: Encrypt Forgejo Runner secret
+  ansible.builtin.command:
+    argv:
+      - ansible-vault
+      - encrypt_string
+      - --vault-password-file
+      - "{{ vault_password_file_path }}"
+      - --stdin-name
+      - forgejo_runner_secret
+    stdin: "{{ generated_forgejo_runner_secret }}"
+    stdin_add_newline: false
+  register: encrypted_forgejo_runner_secret
+  changed_when: false
+  when: not forgejo_runner_vault_stat.stat.exists
+  no_log: true
+
+- name: Save encrypted Forgejo Runner secret
+  ansible.builtin.copy:
+    dest: "{{ forgejo_runner_vault_path }}"
+    content: "{{ encrypted_forgejo_runner_secret.stdout }}\n"
+    mode: "0600"
+    force: false
+  when: not forgejo_runner_vault_stat.stat.exists
+  no_log: true
+
+- name: Load Forgejo Runner credentials
+  ansible.builtin.include_vars:
+    file: "{{ forgejo_runner_vault_path }}"
+  no_log: true
+
+- name: Validate Forgejo Runner secret
+  ansible.builtin.assert:
+    that:
+      - forgejo_runner_secret is defined
+      - forgejo_runner_secret is match('^[0-9a-f]{40}$')
+    fail_msg: "Forgejo Runner secret is missing or invalid"
+    quiet: true
+  no_log: true

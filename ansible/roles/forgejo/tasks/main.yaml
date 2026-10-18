@@ -1,0 +1,159 @@
+---
+- name: Load PostgreSQL credentials
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/postgresql.yaml.vault"
+  no_log: true
+
+- name: Load Forgejo credentials
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/forgejo.yaml.vault"
+  no_log: true
+
+- name: Select Forgejo PostgreSQL database
+  ansible.builtin.set_fact:
+    forgejo_postgresql_database: >-
+      {{
+        (
+          postgresql.infrastructure.databases
+          | selectattr('name', 'equalto', forgejo.database.application_name)
+          | list
+          | first
+        )
+      }}
+
+- name: Validate Forgejo credentials
+  ansible.builtin.assert:
+    that:
+      - forgejo_admin_password is defined
+      - forgejo_admin_password | length > 0
+      - lookup(
+        'ansible.builtin.vars',
+        forgejo_postgresql_database.password_variable,
+        default=''
+        ) | length > 0
+    quiet: true
+  no_log: true
+
+- name: Create Forgejo namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ forgejo.namespace }}"
+
+- name: Create Forgejo admin Secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ forgejo.admin.secret_name }}"
+        namespace: "{{ forgejo.namespace }}"
+      type: Opaque
+      stringData:
+        username: "{{ forgejo.admin.username }}"
+        password: "{{ forgejo_admin_password }}"
+  no_log: true
+
+- name: Create Forgejo database Secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ forgejo.database.secret_name }}"
+        namespace: "{{ forgejo.namespace }}"
+      type: Opaque
+      stringData:
+        password: >-
+          {{
+            lookup(
+              'ansible.builtin.vars',
+              forgejo_postgresql_database.password_variable
+            )
+          }}
+  no_log: true
+
+- name: Verify PostgreSQL cluster is ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: postgresql.cnpg.io/v1
+    kind: Cluster
+    name: "{{ postgresql.infrastructure.name }}"
+    namespace: "{{ postgresql.namespace }}"
+  register: forgejo_postgresql_cluster
+  until: >-
+    forgejo_postgresql_cluster.resources | length > 0
+    and
+    (
+      forgejo_postgresql_cluster.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) > 0
+  retries: 60
+  delay: 5
+
+- name: Verify Forgejo PostgreSQL resources are applied
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: postgresql.cnpg.io/v1
+    kind: "{{ item }}"
+    name: "{{ postgresql.infrastructure.name }}-{{ forgejo_postgresql_database.name }}"
+    namespace: "{{ postgresql.namespace }}"
+  register: forgejo_postgresql_resource
+  until: >-
+    forgejo_postgresql_resource.resources | length > 0
+    and
+    (
+      forgejo_postgresql_resource.resources[0].status.applied
+      | default(false)
+      | bool
+    )
+  retries: 60
+  delay: 5
+  loop:
+    - DatabaseRole
+    - Database
+
+- name: Install Forgejo
+  kubernetes.core.helm:
+    name: "{{ forgejo.helm.release_name }}"
+    chart_ref: "{{ forgejo.helm.chart_ref }}"
+    chart_version: "{{ forgejo.helm.version }}"
+    release_namespace: "{{ forgejo.namespace }}"
+    create_namespace: false
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: true
+    timeout: 900s
+    update_repo_cache: false
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+
+- name: Wait for Forgejo deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ forgejo.helm.release_name }}"
+    namespace: "{{ forgejo.namespace }}"
+  register: forgejo_deployment
+  until: >-
+    forgejo_deployment.resources | length > 0
+    and
+    (
+      forgejo_deployment.resources[0].status.availableReplicas
+      | default(0)
+      | int
+    ) >= 1
+  retries: 120
+  delay: 5

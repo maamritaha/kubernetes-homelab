@@ -1,0 +1,106 @@
+---
+replicaCount: 1
+
+strategy:
+  type: Recreate
+
+image:
+  rootless: true
+
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+
+  ssh:
+    type: ClusterIP
+    port: 22
+
+ingress:
+  enabled: {{ forgejo.ingress.enabled | bool | lower }}
+  className: {{ forgejo.ingress.class_name }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ forgejo.ingress.tls.cluster_issuer }}
+  hosts:
+    - host: {{ forgejo.ingress.host }}
+      paths:
+        - path: /
+          pathType: Prefix
+          port: http
+  tls:
+    - secretName: {{ forgejo.ingress.tls.secret_name }}
+      hosts:
+        - {{ forgejo.ingress.host }}
+
+persistence:
+  enabled: true
+  create: true
+  size: {{ forgejo.storage.size }}
+  storageClass: {{ forgejo.storage.storage_class }}
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    cpu: {{ forgejo.resources.requests.cpu }}
+    memory: {{ forgejo.resources.requests.memory }}
+  limits:
+    cpu: "{{ forgejo.resources.limits.cpu }}"
+    memory: {{ forgejo.resources.limits.memory }}
+
+postgresql:
+  enabled: false
+
+postgresql-ha:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+gitea:
+  admin:
+    username: {{ forgejo.admin.username }}
+    email: {{ forgejo.admin.email }}
+    existingSecret: {{ forgejo.admin.secret_name }}
+    passwordMode: initialOnlyNoReset
+
+  additionalConfigFromEnvs:
+    - name: FORGEJO__DATABASE__PASSWD
+      valueFrom:
+        secretKeyRef:
+          name: {{ forgejo.database.secret_name }}
+          key: password
+
+  config:
+    APP_NAME: Forgejo Homelab
+    RUN_MODE: prod
+
+    server:
+      DOMAIN: {{ forgejo.ingress.host }}
+      ROOT_URL: https://{{ forgejo.ingress.host }}/
+      PROTOCOL: http
+      HTTP_PORT: 3000
+      DISABLE_SSH: true
+
+    database:
+      DB_TYPE: postgres
+      HOST: {{ postgresql.infrastructure.name }}-rw.{{ postgresql.namespace }}.svc.cluster.local:5432
+      NAME: {{ forgejo_postgresql_database.database }}
+      USER: {{ forgejo_postgresql_database.username }}
+      SSL_MODE: disable
+
+    service:
+      DISABLE_REGISTRATION: true
+      REQUIRE_SIGNIN_VIEW: false
+
+    session:
+      PROVIDER: db
+
+    cache:
+      ADAPTER: memory
+
+    queue:
+      TYPE: level
+
+    actions:
+      ENABLED: true

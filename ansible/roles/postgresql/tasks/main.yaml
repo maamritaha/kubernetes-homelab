@@ -2,6 +2,17 @@
 - name: Load PostgreSQL credentials
   ansible.builtin.import_tasks: credentials.yaml
 
+- name: Validate PostgreSQL application credentials
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.vars', item.password_variable, default='') | length > 0
+    fail_msg: "Missing PostgreSQL credential for {{ item.name }}"
+    quiet: true
+  loop: "{{ postgresql.infrastructure.databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
 - name: Create PostgreSQL namespace
   kubernetes.core.k8s:
     state: present
@@ -31,7 +42,7 @@
   when: postgresql.infrastructure.superuser.enabled | bool
   no_log: true
 
-- name: Create Airflow PostgreSQL Secret
+- name: Create application PostgreSQL Secrets
   kubernetes.core.k8s:
     state: present
     kubeconfig: /etc/kubernetes/admin.conf
@@ -39,14 +50,17 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ postgresql.infrastructure.airflow.secret_name }}"
+        name: "{{ item.secret_name }}"
         namespace: "{{ postgresql.namespace }}"
         labels:
           cnpg.io/reload: "true"
       type: kubernetes.io/basic-auth
       stringData:
-        username: "{{ postgresql.infrastructure.airflow.username }}"
-        password: "{{ postgresql_airflow_password }}"
+        username: "{{ item.username }}"
+        password: "{{ lookup('ansible.builtin.vars', item.password_variable) }}"
+  loop: "{{ postgresql.infrastructure.databases }}"
+  loop_control:
+    label: "{{ item.name }}"
   no_log: true
 
 - name: Deploy PostgreSQL infrastructure cluster
@@ -55,7 +69,7 @@
     kubeconfig: /etc/kubernetes/admin.conf
     definition: "{{ lookup('template', 'cluster.yaml.j2') | from_yaml }}"
 
-- name: Create Airflow PostgreSQL role
+- name: Create application PostgreSQL roles
   kubernetes.core.k8s:
     state: present
     kubeconfig: /etc/kubernetes/admin.conf
@@ -63,12 +77,12 @@
       apiVersion: postgresql.cnpg.io/v1
       kind: DatabaseRole
       metadata:
-        name: "{{ postgresql.infrastructure.name }}-airflow"
+        name: "{{ postgresql.infrastructure.name }}-{{ item.name }}"
         namespace: "{{ postgresql.namespace }}"
       spec:
         cluster:
           name: "{{ postgresql.infrastructure.name }}"
-        name: "{{ postgresql.infrastructure.airflow.username }}"
+        name: "{{ item.username }}"
         ensure: present
         login: true
         inherit: true
@@ -78,9 +92,12 @@
         connectionLimit: -1
         databaseRoleReclaimPolicy: retain
         passwordSecret:
-          name: "{{ postgresql.infrastructure.airflow.secret_name }}"
+          name: "{{ item.secret_name }}"
+  loop: "{{ postgresql.infrastructure.databases }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: Create Airflow PostgreSQL database
+- name: Create application PostgreSQL databases
   kubernetes.core.k8s:
     state: present
     kubeconfig: /etc/kubernetes/admin.conf
@@ -88,14 +105,17 @@
       apiVersion: postgresql.cnpg.io/v1
       kind: Database
       metadata:
-        name: "{{ postgresql.infrastructure.name }}-airflow"
+        name: "{{ postgresql.infrastructure.name }}-{{ item.name }}"
         namespace: "{{ postgresql.namespace }}"
       spec:
         cluster:
           name: "{{ postgresql.infrastructure.name }}"
-        name: "{{ postgresql.infrastructure.airflow.database }}"
-        owner: "{{ postgresql.infrastructure.airflow.username }}"
+        name: "{{ item.database }}"
+        owner: "{{ item.username }}"
         databaseReclaimPolicy: retain
+  loop: "{{ postgresql.infrastructure.databases }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
@@ -112,21 +132,29 @@
     wait_sleep: 5
   register: postgresql_cluster_status
 
-
-- name: Wait for Airflow PostgreSQL resources to be applied
+- name: Wait for application PostgreSQL resources to be applied
   kubernetes.core.k8s_info:
     api_version: postgresql.cnpg.io/v1
-    kind: "{{ item }}"
-    name: "{{ postgresql.infrastructure.name }}-airflow"
+    kind: "{{ item.0 }}"
+    name: "{{ postgresql.infrastructure.name }}-{{ item.1.name }}"
     namespace: "{{ postgresql.namespace }}"
     kubeconfig: /etc/kubernetes/admin.conf
-  register: airflow_postgresql_resources
+  register: postgresql_application_resources
   until: >-
-    airflow_postgresql_resources.resources | length > 0
+    postgresql_application_resources.resources | length > 0
     and
-    (airflow_postgresql_resources.resources[0].status.applied | default(false) | bool)
+    (
+      postgresql_application_resources.resources[0].status.applied
+      | default(false)
+      | bool
+    )
   retries: 60
   delay: 5
-  loop:
-    - DatabaseRole
-    - Database
+  loop: >-
+    {{
+      ['DatabaseRole', 'Database']
+      | product(postgresql.infrastructure.databases)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.0 }}/{{ item.1.name }}"

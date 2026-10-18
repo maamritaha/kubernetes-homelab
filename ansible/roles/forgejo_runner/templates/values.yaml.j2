@@ -1,0 +1,82 @@
+---
+# Tracks version-controlled post-renderer changes in Helm release values.
+# This key is intentionally not consumed by the chart templates.
+homelabPostRendererChecksum: {{ forgejo_runner_post_renderer_checksum | to_json }}
+
+replicaCount: 1
+
+image:
+  runner:
+    repository: data.forgejo.org/forgejo/runner
+    tag: {{ forgejo_runner.images.runner | to_json }}
+    pullPolicy: IfNotPresent
+
+  dockerk8s:
+    repository: docker.io/glvx/forgejo-runner-k8s
+    tag: {{ forgejo_runner.images.dockerk8s | to_json }}
+    pullPolicy: IfNotPresent
+
+  buildkitd:
+    repository: moby/buildkit
+    tag: {{ forgejo_runner.images.buildkitd | to_json }}
+    pullPolicy: IfNotPresent
+
+forgejo:
+  instanceUrl: {{ forgejo_runner.forgejo_url | to_json }}
+
+  runner:
+    connection:
+      name: default
+      uuid: {{ forgejo_runner_uuid | to_json }}
+      token: {{ forgejo_runner_secret | to_json }}
+
+    capacity: {{ forgejo_runner.capacity }}
+    timeout: "3h"
+
+    labels:
+      - "k8s:docker://{{ forgejo_runner.jobs.default_image }}"
+
+    workdirParent: /data/workspace
+
+    extraEnv:
+      - name: SSL_CERT_FILE
+        value: /etc/ssl/homelab/ca.crt
+
+dockerk8s:
+  listenAddr: unix:///run/dockerk8s/docker.sock
+  defaultJobImage: {{ forgejo_runner.jobs.default_image | to_json }}
+  buildkitAddr: unix:///run/buildkit/buildkitd.sock
+
+  build:
+    enabled: false
+
+  jobResources:
+    requests:
+      cpu: {{ forgejo_runner.jobs.requests.cpu | to_json }}
+      memory: {{ forgejo_runner.jobs.requests.memory | to_json }}
+
+    limits:
+      cpu: {{ forgejo_runner.jobs.limits.cpu | to_json }}
+      memory: {{ forgejo_runner.jobs.limits.memory | to_json }}
+
+    max:
+      cpu: {{ forgejo_runner.jobs.limits.cpu | to_json }}
+      memory: {{ forgejo_runner.jobs.limits.memory | to_json }}
+
+persistence:
+  enabled: true
+  storageClass: {{ forgejo_runner.storage.storage_class | to_json }}
+  size: {{ forgejo_runner.storage.size | to_json }}
+  mountPath: /data
+
+cache:
+  enabled: false
+
+serviceAccount:
+  create: true
+
+rbac:
+  create: true
+
+networkPolicy:
+  enabled: false

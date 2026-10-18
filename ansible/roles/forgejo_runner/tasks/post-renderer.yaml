@@ -1,0 +1,54 @@
+---
+- name: Create Forgejo Runner post-renderer directory
+  ansible.builtin.file:
+    path: /opt/forgejo-runner/post-renderer
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Forgejo Runner post-renderer patches
+  ansible.builtin.copy:
+    src: "post-renderer/{{ item }}"
+    dest: "/opt/forgejo-runner/post-renderer/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - buildkit-apparmor.yaml
+    - runner-ca.yaml
+
+- name: Install Forgejo Runner post-renderer script
+  ansible.builtin.copy:
+    src: post-renderer/post-renderer.sh
+    dest: /opt/forgejo-runner/post-renderer/post-renderer.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Forgejo Runner Helm plugin manifest
+  ansible.builtin.copy:
+    src: post-renderer/plugin.yaml
+    dest: /opt/forgejo-runner/post-renderer/plugin.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check installed Helm plugins
+  ansible.builtin.command:
+    argv:
+      - helm
+      - plugin
+      - list
+  register: forgejo_runner_helm_plugins
+  changed_when: false
+  check_mode: false
+
+- name: Install Forgejo Runner Helm post-renderer plugin
+  ansible.builtin.command:
+    argv:
+      - helm
+      - plugin
+      - install
+      - /opt/forgejo-runner/post-renderer
+  when: "'forgejo-runner-postrenderer' not in forgejo_runner_helm_plugins.stdout"

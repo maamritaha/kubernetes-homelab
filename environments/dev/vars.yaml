@@ -188,10 +188,18 @@ postgresql:
       enabled: true
       secret_name: postgres-infra-superuser
 
-    airflow:
-      database: airflow
-      username: airflow
-      secret_name: postgres-infra-airflow
+    databases:
+      - name: airflow
+        database: airflow
+        username: airflow
+        secret_name: postgres-infra-airflow
+        password_variable: postgresql_airflow_password
+
+      - name: forgejo
+        database: forgejo
+        username: forgejo
+        secret_name: postgres-infra-forgejo
+        password_variable: postgresql_forgejo_password
 
 rabbitmq:
   namespace: messaging
@@ -230,3 +238,82 @@ rabbitmq:
         username: airflow
         secret_name: rabbitmq-infra-airflow
         vhost: /airflow
+
+forgejo:
+  namespace: developer-tools
+
+  helm:
+    release_name: forgejo
+    chart_ref: oci://code.forgejo.org/forgejo-helm/forgejo
+    version: "16.2.2"
+
+  admin:
+    username: forgejo_admin
+    email: admin@dev.homelab
+    secret_name: forgejo-admin
+
+  database:
+    application_name: forgejo
+    secret_name: forgejo-database
+
+  storage:
+    storage_class: longhorn
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  ingress:
+    enabled: true
+    class_name: traefik
+    host: git.dev.homelab
+    tls:
+      enabled: true
+      cluster_issuer: homelab-ca
+      secret_name: forgejo-tls
+
+forgejo_runner:
+  namespace: forgejo-ci
+  name: dev-shared-runner
+  capacity: 2
+  forgejo_url: https://git.dev.homelab
+
+  helm:
+    release_name: forgejo-runner
+    chart_ref: forge-runner/forge-runner-k8s
+    version: "1.15.1"
+    repository:
+      name: forge-runner
+      url: https://git.aquila-consortium.org/api/packages/guilhem_lavaux/helm
+
+  images:
+    runner: "12.12.0"
+    dockerk8s: "v0.13.0"
+    buildkitd: "v0.31.0-rootless"
+
+  storage:
+    storage_class: longhorn
+    size: 2Gi
+
+  jobs:
+    default_image: ubuntu:24.04
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+dagger:
+  namespace: developer-tools
+  engine:
+    enabled: true
+  cache:
+    enabled: true
+    storage_class: longhorn
+    size: 10Gi

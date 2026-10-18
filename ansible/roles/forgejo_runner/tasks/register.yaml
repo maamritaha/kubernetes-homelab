@@ -1,0 +1,113 @@
+---
+- name: Get existing Forgejo Runner Helm values
+  ansible.builtin.command:
+    argv:
+      - helm
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - values
+      - "{{ forgejo_runner.helm.release_name }}"
+      - --namespace
+      - "{{ forgejo_runner.namespace }}"
+      - --output
+      - json
+  register: forgejo_runner_existing_values
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reuse existing Forgejo Runner UUID
+  ansible.builtin.set_fact:
+    forgejo_runner_uuid: >-
+      {{
+        (
+          (forgejo_runner_existing_values.stdout | default('{}', true) | from_json)
+          .get('forgejo', {})
+          .get('runner', {})
+          .get('connection', {})
+          .get('uuid', '')
+        )
+      }}
+  when: forgejo_runner_existing_values.rc == 0
+  no_log: true
+
+- name: Determine whether Forgejo Runner registration is required
+  ansible.builtin.set_fact:
+    forgejo_runner_registration_required: >-
+      {{
+        not (
+          forgejo_runner_uuid | default('')
+          is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+        )
+      }}
+
+- name: Require existing runner identity in check mode
+  ansible.builtin.assert:
+    that:
+      - not forgejo_runner_registration_required | bool
+    fail_msg: >-
+      No valid runner UUID was found in the existing Helm release.
+      First installation cannot register a runner in --check mode.
+    quiet: true
+  when: ansible_check_mode
+
+- name: Register missing Forgejo Runner
+  when:
+    - forgejo_runner_registration_required | bool
+    - not ansible_check_mode
+  block:
+    - name: Get Forgejo pod
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: developer-tools
+        label_selectors:
+          - app.kubernetes.io/name=forgejo
+        kubeconfig: /etc/kubernetes/admin.conf
+      register: forgejo_runner_forgejo_pods
+
+    - name: Validate Forgejo pod availability
+      ansible.builtin.assert:
+        that:
+          - forgejo_runner_forgejo_pods.resources | length > 0
+        fail_msg: "Forgejo pod not found"
+        quiet: true
+
+    - name: Register Forgejo Runner
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - exec
+          - -n
+          - developer-tools
+          - "{{ forgejo_runner_forgejo_pods.resources[0].metadata.name }}"
+          - -c
+          - forgejo
+          - --
+          - forgejo
+          - forgejo-cli
+          - actions
+          - register
+          - --secret
+          - "{{ forgejo_runner_secret }}"
+          - --name
+          - "{{ forgejo_runner.name }}"
+          - --labels
+          - k8s
+      register: forgejo_runner_registration
+      changed_when: true
+      no_log: true
+
+    - name: Set newly registered Forgejo Runner UUID
+      ansible.builtin.set_fact:
+        forgejo_runner_uuid: "{{ forgejo_runner_registration.stdout | trim }}"
+      no_log: true
+
+- name: Validate Forgejo Runner UUID
+  ansible.builtin.assert:
+    that:
+      - forgejo_runner_uuid | default('') is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+    fail_msg: "Forgejo Runner UUID is missing or invalid"
+    quiet: true

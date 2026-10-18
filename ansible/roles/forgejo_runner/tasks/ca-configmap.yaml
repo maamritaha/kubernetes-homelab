@@ -1,0 +1,42 @@
+---
+- name: Read Homelab Root CA public certificate
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - get
+      - secret
+      - homelab-root-ca
+      - --namespace=cert-manager
+      - --output=jsonpath={.data.tls\.crt}
+  register: forgejo_runner_ca_result
+  changed_when: false
+  no_log: true
+
+- name: Validate Homelab Root CA certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -inform
+      - PEM
+      - -noout
+      - -checkend
+      - "0"
+    stdin: "{{ forgejo_runner_ca_result.stdout | b64decode }}"
+  changed_when: false
+  no_log: true
+
+- name: Create Homelab Root CA ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: homelab-root-ca
+        namespace: "{{ forgejo_runner.namespace }}"
+      data:
+        ca.crt: "{{ forgejo_runner_ca_result.stdout | b64decode }}"
+  no_log: true

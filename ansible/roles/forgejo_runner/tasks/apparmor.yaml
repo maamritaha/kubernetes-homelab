@@ -1,0 +1,17 @@
+---
+- name: Install Forgejo BuildKit AppArmor profile
+  ansible.builtin.copy:
+    src: forgejo-buildkit.apparmor
+    dest: /etc/apparmor.d/forgejo-buildkit
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  register: forgejo_apparmor_profile
+
+- name: Load Forgejo BuildKit AppArmor profile
+  ansible.builtin.command:
+    cmd: apparmor_parser -r /etc/apparmor.d/forgejo-buildkit
+  become: true
+  when: forgejo_apparmor_profile.changed
+  changed_when: true
