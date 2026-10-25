@@ -1,0 +1,63 @@
+---
+- name: Get Kubernetes worker node names
+  ansible.builtin.set_fact:
+    forgejo_runner_worker_names: >-
+      {{
+        groups['workers']
+        | default([])
+      }}
+
+- name: Wait for Longhorn CSI driver registration on workers
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: storage.k8s.io/v1
+    kind: CSINode
+    name: "{{ item }}"
+  register: forgejo_runner_csi_node
+  until: >-
+    (
+      forgejo_runner_csi_node.resources
+      | length
+    ) == 1
+    and
+    (
+      forgejo_runner_csi_node.resources[0].spec.drivers
+      | default([])
+      | selectattr('name', 'equalto', 'driver.longhorn.io')
+      | list
+      | length
+    ) > 0
+  retries: 60
+  delay: 5
+  loop: "{{ forgejo_runner_worker_names }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Wait for Longhorn CSI node plugin readiness
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: longhorn-system
+    name: longhorn-csi-plugin
+  register: forgejo_runner_longhorn_csi
+  until: >-
+    (
+      forgejo_runner_longhorn_csi.resources | length == 1
+    )
+    and
+    (
+      forgejo_runner_longhorn_csi.resources[0].status.desiredNumberScheduled
+      | default(0) | int
+    ) > 0
+    and
+    (
+      forgejo_runner_longhorn_csi.resources[0].status.numberReady
+      | default(0) | int
+    ) >=
+    (
+      forgejo_runner_longhorn_csi.resources[0].status.desiredNumberScheduled
+      | default(0) | int
+    )
+  retries: 60
+  delay: 5

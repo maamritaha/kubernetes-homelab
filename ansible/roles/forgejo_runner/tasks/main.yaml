@@ -67,6 +67,9 @@
         ) | hash('sha256')
       }}
 
+- name: Wait for Longhorn storage readiness
+  ansible.builtin.import_tasks: wait-longhorn.yaml
+
 - name: Install Forgejo Runner Helm chart
   kubernetes.core.helm:
     name: "{{ forgejo_runner.helm.release_name }}"
@@ -91,6 +94,15 @@
     label_selectors:
       - "app.kubernetes.io/instance={{ forgejo_runner.helm.release_name }}"
   register: forgejo_runner_deployments
+  until: >-
+    (
+      forgejo_runner_deployments.resources
+      | map(attribute='status.availableReplicas', default=0)
+      | map('int')
+      | sum
+    ) >= 1
+  retries: 60
+  delay: 5
 
 - name: Validate Forgejo Runner deployment
   ansible.builtin.assert:

@@ -1,0 +1,364 @@
+---
+- name: Validate Forgejo identity configuration
+  ansible.builtin.assert:
+    that:
+      - cluster_environment | length > 0
+      - forgejo_identity.username == 'homelab-ci'
+      - forgejo_identity.email | length > 0
+      - forgejo_identity.vault.kv_mount | length > 0
+      - forgejo_identity.vault.secret_path | length > 0
+      - not forgejo_identity.vault.secret_path.startswith('/')
+      - "'..' not in forgejo_identity.vault.secret_path"
+      - forgejo.ingress.enabled | bool
+      - vault.ingress.enabled | bool
+    quiet: true
+
+- name: Resolve Forgejo identity API endpoints
+  ansible.builtin.set_fact:
+    forgejo_identity_vault_url: "https://{{ vault.ingress.host }}"
+    forgejo_identity_forgejo_url: "https://{{ forgejo.ingress.host }}"
+    forgejo_identity_secret_api_path: >-
+      {{ forgejo_identity.vault.kv_mount | trim('/') }}/data/{{ forgejo_identity.vault.secret_path | trim('/') }}
+    forgejo_identity_ca_file: "/tmp/homelab-forgejo-identity-ca.crt"
+    forgejo_identity_account_exists: false
+    forgejo_identity_secret_exists: false
+    forgejo_identity_secret_created: false
+    forgejo_identity_account_created: false
+  no_log: true
+
+- name: Load Forgejo administrator credentials
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/forgejo.yaml.vault"
+  no_log: true
+
+- name: Load encrypted Vault bootstrap credentials
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/hashicorp-vault.yaml.vault"
+  no_log: true
+
+- name: Normalize Vault bootstrap credentials
+  ansible.builtin.set_fact:
+    forgejo_identity_vault_bootstrap: >-
+      {{
+        (hashicorp_vault_bootstrap | from_json)
+        if hashicorp_vault_bootstrap is string
+        else hashicorp_vault_bootstrap
+      }}
+  no_log: true
+
+- name: Validate API credentials
+  ansible.builtin.assert:
+    that:
+      - forgejo_admin_password is defined
+      - forgejo_admin_password | length > 0
+      - forgejo_identity_vault_bootstrap.root_token is defined
+      - forgejo_identity_vault_bootstrap.root_token | length > 0
+    quiet: true
+  no_log: true
+
+- name: Read existing Homelab Root CA
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.tls.ca_configmap_name }}"
+  register: forgejo_identity_ca_configmap
+
+- name: Validate existing Homelab Root CA
+  ansible.builtin.assert:
+    that:
+      - forgejo_identity_ca_configmap.resources | length == 1
+      - "'ca.crt' in forgejo_identity_ca_configmap.resources[0].data"
+    quiet: true
+
+- name: Install public CA certificate for API verification
+  ansible.builtin.copy:
+    dest: "{{ forgejo_identity_ca_file }}"
+    content: "{{ forgejo_identity_ca_configmap.resources[0].data['ca.crt'] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verify Vault is initialized and unsealed
+  ansible.builtin.include_tasks: "{{ role_path }}/../vault_config/tasks/status.yaml"
+
+- name: Require operational Vault
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_initialized | bool
+      - not (hashicorp_vault_sealed | bool)
+    fail_msg: "Vault must be initialized and unsealed."
+    quiet: true
+
+- name: Read Vault mounts through authenticated HTTPS API
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_vault_url }}/v1/sys/mounts"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ forgejo_identity_vault_bootstrap.root_token }}"
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: 200
+  register: forgejo_identity_vault_mounts
+  changed_when: false
+  no_log: true
+
+- name: Record whether configured Vault KV mount exists
+  ansible.builtin.set_fact:
+    forgejo_identity_kv_mount_exists: >-
+      {{
+        (forgejo_identity.vault.kv_mount | trim('/') ~ '/')
+        in forgejo_identity_vault_mounts.json
+      }}
+
+- name: Create missing Vault KV v2 mount
+  ansible.builtin.uri:
+    url: >-
+      {{ forgejo_identity_vault_url }}/v1/sys/mounts/{{
+        forgejo_identity.vault.kv_mount | trim('/')
+      }}
+    method: POST
+    headers:
+      X-Vault-Token: "{{ forgejo_identity_vault_bootstrap.root_token }}"
+    body_format: json
+    body:
+      type: kv
+      description: "Kubernetes homelab platform secrets"
+      options:
+        version: "2"
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    status_code: [200, 204]
+  register: forgejo_identity_mount_creation
+  changed_when: forgejo_identity_mount_creation.status in [200, 204]
+  when: not (forgejo_identity_kv_mount_exists | bool)
+  no_log: true
+
+- name: Refresh Vault mounts after reconciliation
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_vault_url }}/v1/sys/mounts"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ forgejo_identity_vault_bootstrap.root_token }}"
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: 200
+  register: forgejo_identity_vault_mounts
+  changed_when: false
+  no_log: true
+
+- name: Validate existing KV v2 mount
+  ansible.builtin.assert:
+    that:
+      - >-
+        (forgejo_identity.vault.kv_mount | trim('/') ~ '/')
+        in forgejo_identity_vault_mounts.json
+      - >-
+        forgejo_identity_vault_mounts.json[
+          forgejo_identity.vault.kv_mount | trim('/') ~ '/'
+        ].type == 'kv'
+      - >-
+        (
+          forgejo_identity_vault_mounts.json[
+            forgejo_identity.vault.kv_mount | trim('/') ~ '/'
+          ].options.version | default('1') | string
+        ) == '2'
+    fail_msg: >-
+      Configured Vault mount exists but is not KV v2.
+      Refusing to modify or replace an incompatible mount.
+    quiet: true
+
+- name: Verify Forgejo API is available
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_forgejo_url }}/api/v1/version"
+    method: GET
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: 200
+  register: forgejo_identity_forgejo_version
+  changed_when: false
+
+- name: Check Forgejo technical account
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_forgejo_url }}/api/v1/users/{{ forgejo_identity.username }}"
+    method: GET
+    url_username: "{{ forgejo.admin.username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: [200, 404]
+  register: forgejo_identity_user_lookup
+  changed_when: false
+  no_log: true
+
+- name: Check Vault technical account secret
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_vault_url }}/v1/{{ forgejo_identity_secret_api_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ forgejo_identity_vault_bootstrap.root_token }}"
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: [200, 404]
+  register: forgejo_identity_secret_lookup
+  changed_when: false
+  no_log: true
+
+- name: Record technical identity existence
+  ansible.builtin.set_fact:
+    forgejo_identity_account_exists: "{{ forgejo_identity_user_lookup.status == 200 }}"
+    forgejo_identity_secret_exists: "{{ forgejo_identity_secret_lookup.status == 200 }}"
+
+- name: Warn when Forgejo account exists without Vault secret
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Forgejo account homelab-ci exists but its Vault
+      password secret is missing. No password will be generated,
+      changed or overwritten. Manual reconciliation is required.
+  when:
+    - forgejo_identity_account_exists | bool
+    - not (forgejo_identity_secret_exists | bool)
+
+- name: Warn when Vault secret exists without Forgejo account
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Vault contains credentials for homelab-ci,
+      but the Forgejo account is missing.
+      Account creation requires explicit recovery authorization.
+  when:
+    - not (forgejo_identity_account_exists | bool)
+    - forgejo_identity_secret_exists | bool
+
+- name: Generate credentials for a completely new identity
+  ansible.builtin.set_fact:
+    forgejo_identity_new_password: >-
+      {{ lookup('ansible.builtin.password', '/dev/null length=48 chars=ascii_letters,digits') }}
+  when:
+    - not (forgejo_identity_account_exists | bool)
+    - not (forgejo_identity_secret_exists | bool)
+  no_log: true
+
+- name: Persist newly generated password before creating Forgejo account
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_vault_url }}/v1/{{ forgejo_identity_secret_api_path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ forgejo_identity_vault_bootstrap.root_token }}"
+    body_format: json
+    body:
+      options:
+        cas: 0
+      data:
+        username: "{{ forgejo_identity.username }}"
+        password: "{{ forgejo_identity_new_password }}"
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    status_code: [200, 204]
+  register: forgejo_identity_secret_creation
+  when:
+    - not (forgejo_identity_account_exists | bool)
+    - not (forgejo_identity_secret_exists | bool)
+  changed_when: forgejo_identity_secret_creation.status in [200, 204]
+  no_log: true
+
+- name: Record newly persisted Vault secret
+  ansible.builtin.set_fact:
+    forgejo_identity_secret_exists: true
+    forgejo_identity_secret_created: true
+  when:
+    - forgejo_identity_secret_creation is defined
+    - not (forgejo_identity_secret_creation.skipped | default(false))
+    - forgejo_identity_secret_creation.status | default(0) in [200, 204]
+
+- name: Read existing password for authorized recovery
+  ansible.builtin.set_fact:
+    forgejo_identity_recovery_password: "{{ forgejo_identity_secret_lookup.json.data.data.password }}"
+  when:
+    - not (forgejo_identity_account_exists | bool)
+    - forgejo_identity_secret_exists | bool
+    - not (forgejo_identity_secret_created | bool)
+    - forgejo_identity.recovery.create_account_from_existing_secret | bool
+  no_log: true
+
+- name: Create non-administrator Forgejo technical account
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_forgejo_url }}/api/v1/admin/users"
+    method: POST
+    url_username: "{{ forgejo.admin.username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      username: "{{ forgejo_identity.username }}"
+      email: "{{ forgejo_identity.email }}"
+      password: >-
+        {{
+          forgejo_identity_new_password
+          | default(forgejo_identity_recovery_password | default(''))
+        }}
+      must_change_password: false
+      send_notify: false
+      restricted: true
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    status_code: 201
+  register: forgejo_identity_created_user
+  changed_when: forgejo_identity_created_user.status == 201
+  when:
+    - not (forgejo_identity_account_exists | bool)
+    - forgejo_identity_secret_exists | bool
+    - >-
+      (forgejo_identity_secret_created | bool)
+      or
+      (forgejo_identity.recovery.create_account_from_existing_secret | bool)
+  no_log: true
+
+- name: Record newly created Forgejo account
+  ansible.builtin.set_fact:
+    forgejo_identity_account_exists: true
+    forgejo_identity_account_created: true
+  when:
+    - forgejo_identity_created_user is defined
+    - not (forgejo_identity_created_user.skipped | default(false))
+    - forgejo_identity_created_user.status | default(0) == 201
+
+- name: Verify final Forgejo account
+  ansible.builtin.uri:
+    url: "{{ forgejo_identity_forgejo_url }}/api/v1/users/{{ forgejo_identity.username }}"
+    method: GET
+    url_username: "{{ forgejo.admin.username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    ca_path: "{{ forgejo_identity_ca_file }}"
+    validate_certs: true
+    return_content: true
+    status_code: 200
+  register: forgejo_identity_final_user
+  changed_when: false
+  when: forgejo_identity_account_exists | bool
+  no_log: true
+
+- name: Validate Forgejo technical account is not an administrator
+  ansible.builtin.assert:
+    that:
+      - forgejo_identity_final_user.json.login == forgejo_identity.username
+      - not (forgejo_identity_final_user.json.is_admin | default(false) | bool)
+    fail_msg: "Forgejo technical account must exist and must not be an administrator."
+    quiet: true
+  when: forgejo_identity_account_exists | bool
+
+- name: Report Forgejo identity reconciliation status
+  ansible.builtin.debug:
+    msg:
+      - "Forgejo account exists: {{ forgejo_identity_account_exists | bool }}"
+      - "Vault secret exists: {{ forgejo_identity_secret_exists | bool }}"
+      - "Forgejo account created this run: {{ forgejo_identity_account_created | bool }}"
+      - "Vault secret created this run: {{ forgejo_identity_secret_created | bool }}"
+      - "Existing passwords were not rotated."

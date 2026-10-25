@@ -1,0 +1,165 @@
+---
+- name: Resolve HashiCorp Vault local secret paths
+  ansible.builtin.set_fact:
+    hashicorp_vault_escrow_file: "{{ playbook_dir }}/../../environments/{{ cluster_environment }}/secrets/hashicorp-vault.yaml.vault"
+    hashicorp_vault_password_file: "{{ lookup('ansible.builtin.config', 'DEFAULT_VAULT_PASSWORD_FILE') }}"
+    hashicorp_vault_unsealed: false
+    hashicorp_vault_unseal_failed: false
+    hashicorp_vault_unseal_failure_verified: false
+    hashicorp_vault_unseal_failure_type: ""
+
+- name: Check Ansible Vault password file
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_password_file }}"
+  register: hashicorp_vault_password_stat
+  delegate_to: localhost
+  become: false
+
+- name: Validate encryption prerequisites
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_password_stat.stat.exists
+      - hashicorp_vault_password_stat.stat.isreg
+      - hashicorp_vault_password_stat.stat.readable
+      - >-
+        (vault.bootstrap.reinstall_with_project_keys | bool)
+        ==
+        (vault.bootstrap.confirm_data_destruction | bool)
+    fail_msg: "Vault password must exist and destructive flags must match."
+    quiet: true
+
+- name: Check local encrypted Vault escrow
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_escrow_file }}"
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_escrow_stat
+
+- name: Read initial Vault status
+  ansible.builtin.include_tasks: status.yaml
+
+- name: Refuse unexpected loss of initialized Vault data
+  ansible.builtin.fail:
+    msg: >-
+      Vault is uninitialized but encrypted escrow exists.
+      Recover the Raft volume or explicitly authorize replacement.
+  when:
+    - not (hashicorp_vault_initialized | bool)
+    - hashicorp_vault_escrow_stat.stat.exists
+    - not (vault.bootstrap.reinstall_with_project_keys | bool)
+
+- name: Refuse sealed Vault without saved shares
+  ansible.builtin.fail:
+    msg: >-
+      Vault is initialized and sealed, but no encrypted
+      Shamir escrow exists. Refusing destructive recovery.
+  when:
+    - hashicorp_vault_initialized | bool
+    - hashicorp_vault_sealed | bool
+    - not hashicorp_vault_escrow_stat.stat.exists
+
+- name: Load existing encrypted Shamir shares
+  ansible.builtin.include_vars:
+    file: "{{ hashicorp_vault_escrow_file }}"
+  no_log: true
+  when:
+    - hashicorp_vault_initialized | bool
+    - hashicorp_vault_sealed | bool
+    - hashicorp_vault_escrow_stat.stat.exists
+
+- name: Attempt to unseal existing Vault
+  when:
+    - hashicorp_vault_initialized | bool
+    - hashicorp_vault_sealed | bool
+    - hashicorp_vault_escrow_stat.stat.exists
+  block:
+    - name: Unseal Vault with saved Shamir shares
+      ansible.builtin.include_tasks: unseal.yaml
+
+  rescue:
+    - name: Record Vault unseal failure
+      ansible.builtin.set_fact:
+        hashicorp_vault_unseal_failed: true
+        hashicorp_vault_unsealed: false
+
+    - name: Report Vault unseal failure safely
+      ansible.builtin.debug:
+        msg: >-
+          Vault unseal failed. The failure was captured
+          without exposing Shamir keys or root token.
+
+- name: Refresh Vault status after unseal attempt
+  ansible.builtin.include_tasks: status.yaml
+  when:
+    - hashicorp_vault_initialized | bool
+
+- name: Warn when destructive flags are enabled but Vault is healthy
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Destructive recovery flags are enabled,
+      but Vault is initialized and unsealed.
+      No reinstallation will be performed.
+      Disable these flags after recovery testing.
+  when:
+    - vault.bootstrap.reinstall_with_project_keys | bool
+    - vault.bootstrap.confirm_data_destruction | bool
+    - hashicorp_vault_initialized | bool
+    - not (hashicorp_vault_sealed | bool)
+
+- name: Refuse sealed Vault without destructive authorization
+  ansible.builtin.fail:
+    msg: >-
+      Vault remains sealed after the unseal attempt.
+      No data has been deleted.
+  when:
+    - hashicorp_vault_initialized | bool
+    - hashicorp_vault_sealed | bool
+    - not (vault.bootstrap.reinstall_with_project_keys | bool)
+
+- name: Refuse destructive recovery without verified key mismatch
+  ansible.builtin.fail:
+    msg: >-
+      Vault remains sealed and destructive recovery was requested,
+      but an invalid Shamir key was not positively identified.
+      Refusing to delete Raft storage.
+  when:
+    - hashicorp_vault_initialized | bool
+    - hashicorp_vault_sealed | bool
+    - vault.bootstrap.reinstall_with_project_keys | bool
+    - vault.bootstrap.confirm_data_destruction | bool
+    - not (hashicorp_vault_unseal_failure_verified | bool)
+
+- name: Reinstall Vault only when explicitly authorized and necessary
+  ansible.builtin.include_tasks: reinstall.yaml
+  when:
+    - vault.bootstrap.reinstall_with_project_keys | bool
+    - vault.bootstrap.confirm_data_destruction | bool
+    - >-
+      (
+        not (hashicorp_vault_initialized | bool)
+        and hashicorp_vault_escrow_stat.stat.exists
+      )
+      or
+      (
+        hashicorp_vault_initialized | bool
+        and hashicorp_vault_sealed | bool
+        and hashicorp_vault_unseal_failed | bool
+        and hashicorp_vault_unseal_failure_verified | bool
+      )
+
+- name: Initialize clean Vault with no saved keys
+  ansible.builtin.include_tasks: initialize.yaml
+  when:
+    - not (hashicorp_vault_initialized | bool)
+    - not hashicorp_vault_escrow_stat.stat.exists
+
+- name: Read final Vault status
+  ansible.builtin.include_tasks: status.yaml
+
+- name: Assert Vault is initialized and unsealed
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_initialized | bool
+      - not (hashicorp_vault_sealed | bool)
+    fail_msg: "HashiCorp Vault is not initialized and unsealed."
+    quiet: true

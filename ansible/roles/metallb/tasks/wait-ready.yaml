@@ -1,0 +1,40 @@
+---
+- name: Wait for MetalLB controller readiness
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ metallb.namespace }}"
+    name: "{{ metallb.controller.deployment_name }}"
+  register: metallb_controller_status
+  until: >-
+    metallb_controller_status.resources | length == 1
+    and
+    (
+      metallb_controller_status.resources[0].status.availableReplicas
+      | default(0) | int
+    ) >= 1
+  retries: 60
+  delay: 5
+
+- name: Wait for MetalLB webhook ready endpoints
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: discovery.k8s.io/v1
+    kind: EndpointSlice
+    namespace: "{{ metallb.namespace }}"
+    label_selectors:
+      - "kubernetes.io/service-name={{ metallb.webhook.service_name }}"
+  register: metallb_webhook_endpoint_slices
+  until: >-
+    (
+      metallb_webhook_endpoint_slices.resources
+      | map(attribute='endpoints', default=[])
+      | flatten
+      | selectattr('conditions.ready', 'defined')
+      | selectattr('conditions.ready', 'equalto', true)
+      | list
+      | length
+    ) > 0
+  retries: 60
+  delay: 5

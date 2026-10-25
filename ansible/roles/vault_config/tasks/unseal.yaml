@@ -1,0 +1,322 @@
+---
+- name: Normalize encrypted Vault bootstrap payload
+  ansible.builtin.set_fact:
+    hashicorp_vault_bootstrap_data: >-
+      {{
+        (hashicorp_vault_bootstrap | from_json)
+        if hashicorp_vault_bootstrap is string
+        else hashicorp_vault_bootstrap
+      }}
+  no_log: true
+
+- name: Validate saved Shamir shares
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_bootstrap_data.unseal_keys_b64 is defined
+      - >-
+        hashicorp_vault_bootstrap_data.unseal_keys_b64 | length
+        >= vault.bootstrap.threshold | int
+    fail_msg: "Encrypted escrow does not contain enough Shamir shares."
+  no_log: true
+
+- name: Read CA for Vault server TLS
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.tls.ca_configmap_name }}"
+  register: hashicorp_vault_ca_configmap
+
+- name: Validate Vault CA is available
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_ca_configmap.resources | length == 1
+      - "'ca.crt' in hashicorp_vault_ca_configmap.resources[0].data"
+
+- name: Validate Vault server TLS hostname
+  ansible.builtin.assert:
+    that:
+      - vault.tls.dns_names is defined
+      - vault.tls.dns_names | length > 0
+      - >-
+        (vault.helm.release_name ~ '.' ~ vault.namespace ~ '.svc')
+        in vault.tls.dns_names
+    fail_msg: "Vault certificate must cover its Kubernetes service DNS name."
+
+- name: Verify Vault unseal dependencies on control plane
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - command -v kubectl && command -v curl && command -v python3
+  changed_when: false
+
+- name: Unseal Vault through temporary Kubernetes port-forward
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import os
+        import socket
+        import subprocess
+        import sys
+        import tempfile
+        import time
+
+        payload = json.load(sys.stdin)
+
+        namespace = payload["namespace"]
+        pod = payload["pod"]
+        server_name = payload["server_name"]
+        ca_pem = payload["ca"]
+        shares = payload["shares"]
+        threshold = int(payload["threshold"])
+
+        class VaultTransportError(Exception):
+            pass
+
+        class VaultAPIError(Exception):
+            pass
+
+        class InvalidShamirKey(Exception):
+            pass
+
+        if len(shares) < threshold:
+            raise RuntimeError("Insufficient Shamir shares")
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            local_port = listener.getsockname()[1]
+
+        process = None
+        ca_path = None
+
+        def vault_request(path, body=None):
+            url = f"https://{server_name}:8200{path}"
+
+            command = [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--max-time", "10",
+                "--cacert", ca_path,
+                "--connect-to",
+                f"{server_name}:8200:127.0.0.1:{local_port}",
+                "--noproxy", "*",
+                "--header", "Content-Type: application/json",
+                "--write-out", "\n%{http_code}",
+            ]
+
+            if body is not None:
+                command.extend([
+                    "--request", "POST",
+                    "--data-binary", "@-",
+                ])
+
+            command.append(url)
+
+            try:
+                result = subprocess.run(
+                    command,
+                    input=json.dumps(body) if body is not None else None,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise VaultTransportError("Vault HTTPS request timed out")
+
+            if result.returncode != 0:
+                raise VaultTransportError(
+                    f"Vault HTTPS transport failure: curl exit code {result.returncode}"
+                )
+
+            try:
+                response_body, status_code = result.stdout.rsplit("\n", 1)
+                http_status = int(status_code)
+            except (ValueError, IndexError):
+                raise VaultAPIError("Invalid Vault HTTP response")
+
+            try:
+                response = json.loads(response_body)
+            except ValueError:
+                raise VaultAPIError("Invalid Vault JSON response")
+
+            if http_status >= 400:
+                errors = response.get("errors", [])
+                normalized_errors = [
+                    str(error).lower() for error in errors
+                ]
+
+                # Only an explicit invalid-key response may
+                # authorize the destructive recovery branch.
+                if path == "/v1/sys/unseal" and http_status == 400:
+                    known_invalid_key = any(
+                        "invalid key" in error
+                        or "invalid unseal key" in error
+                        or "invalid seal key" in error
+                        for error in normalized_errors
+                    )
+
+                    if known_invalid_key:
+                        raise InvalidShamirKey(
+                            "Vault explicitly rejected a Shamir key"
+                        )
+
+                raise VaultAPIError(
+                    f"Vault API returned HTTP {http_status}"
+                )
+
+            return response
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".crt",
+                prefix="vault-ca-",
+                delete=False,
+            ) as ca_file:
+                os.chmod(ca_file.name, 0o600)
+                ca_file.write(ca_pem)
+                ca_path = ca_file.name
+
+            command = [
+                "kubectl",
+                "--kubeconfig=/etc/kubernetes/admin.conf",
+                "--namespace", namespace,
+                "port-forward",
+                "--address", "127.0.0.1",
+                f"pod/{pod}",
+                f"{local_port}:8200",
+            ]
+
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+            deadline = time.monotonic() + 30
+            status = None
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise VaultTransportError(
+                        "Kubernetes port-forward terminated unexpectedly"
+                    )
+
+                try:
+                    status = vault_request("/v1/sys/seal-status")
+                    break
+                except (VaultTransportError, VaultAPIError):
+                    time.sleep(1)
+
+            if status is None:
+                raise VaultTransportError(
+                    "Vault HTTPS API did not become reachable"
+                )
+
+            if not status.get("initialized", False):
+                raise VaultAPIError(
+                    "Vault is not initialized"
+                )
+
+            if status.get("sealed", True):
+                for share in shares[:threshold]:
+                    response = vault_request(
+                        "/v1/sys/unseal",
+                        {"key": share},
+                    )
+
+                    if not response.get("sealed", True):
+                        break
+
+            status = vault_request("/v1/sys/seal-status")
+
+            if status.get("sealed", True):
+                raise VaultAPIError(
+                    "Vault remains sealed after applying Shamir shares"
+                )
+
+            print("VAULT_UNSEAL_SUCCESS")
+
+        except InvalidShamirKey:
+            # Machine-readable marker without secret material.
+            print("VAULT_UNSEAL_INVALID_KEY")
+            sys.exit(20)
+
+        except (VaultTransportError, VaultAPIError) as error:
+            print(f"VAULT_UNSEAL_TECHNICAL_FAILURE: {error}")
+            sys.exit(21)
+
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+            if ca_path is not None:
+                try:
+                    os.unlink(ca_path)
+                except FileNotFoundError:
+                    pass
+    stdin: >-
+      {{
+        {
+          'namespace': vault.namespace,
+          'pod': vault.helm.release_name ~ '-0',
+          'server_name': vault.helm.release_name ~ '.' ~ vault.namespace ~ '.svc',
+          'ca': hashicorp_vault_ca_configmap.resources[0].data['ca.crt'],
+          'shares': hashicorp_vault_bootstrap_data.unseal_keys_b64,
+          'threshold': vault.bootstrap.threshold | int
+        } | to_json
+      }}
+    stdin_add_newline: true
+  register: hashicorp_vault_unseal_result
+  failed_when: false
+  changed_when: >-
+    hashicorp_vault_unseal_result.rc == 0
+    and 'VAULT_UNSEAL_SUCCESS' in hashicorp_vault_unseal_result.stdout
+  no_log: true
+
+- name: Record classified Vault unseal result
+  ansible.builtin.set_fact:
+    hashicorp_vault_unseal_failed: >-
+      {{ hashicorp_vault_unseal_result.rc != 0 }}
+    hashicorp_vault_unseal_failure_verified: >-
+      {{
+        hashicorp_vault_unseal_result.rc == 20
+        and 'VAULT_UNSEAL_INVALID_KEY'
+        in hashicorp_vault_unseal_result.stdout
+      }}
+    hashicorp_vault_unseal_failure_type: >-
+      {{
+        'invalid_shamir_key'
+        if hashicorp_vault_unseal_result.rc == 20
+        else (
+          'technical_failure'
+          if hashicorp_vault_unseal_result.rc != 0
+          else 'none'
+        )
+      }}
+
+- name: Refresh status after unseal
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/status.yaml"
+
+- name: Record successful unseal
+  ansible.builtin.set_fact:
+    hashicorp_vault_unsealed: >-
+      {{
+        (hashicorp_vault_initialized | bool)
+        and not (hashicorp_vault_sealed | bool)
+      }}

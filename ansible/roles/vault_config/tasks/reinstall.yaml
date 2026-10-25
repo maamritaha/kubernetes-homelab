@@ -1,0 +1,168 @@
+---
+- name: Require explicit authorization for Raft destruction
+  ansible.builtin.assert:
+    that:
+      - vault.bootstrap.reinstall_with_project_keys | bool
+      - vault.bootstrap.confirm_data_destruction | bool
+    fail_msg: "Destructive Vault recovery was not explicitly authorized."
+    quiet: true
+
+- name: Preflight encryption before destructive Vault recovery
+  ansible.builtin.command:
+    argv:
+      - ansible-vault
+      - encrypt_string
+      - --vault-password-file
+      - "{{ hashicorp_vault_password_file }}"
+      - --encrypt-vault-id
+      - default
+      - --stdin-name
+      - hashicorp_vault_encryption_test
+    stdin: "vault-bootstrap-encryption-test"
+    stdin_add_newline: false
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_destructive_encryption_preflight
+  changed_when: false
+  no_log: true
+
+- name: Validate encryption before deleting Vault data
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_destructive_encryption_preflight.rc == 0
+      - "'hashicorp_vault_encryption_test: !vault |' in hashicorp_vault_destructive_encryption_preflight.stdout"
+    fail_msg: "Encryption preflight failed. Refusing destructive Vault recovery."
+    quiet: true
+  no_log: true
+
+- name: Read Vault StatefulSet PVC template names
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.helm.release_name }}"
+  register: hashicorp_vault_sts
+
+- name: Validate exact Vault StatefulSet identity before deletion
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_sts.resources | length == 1
+      - hashicorp_vault_sts.resources[0].metadata.name == vault.helm.release_name
+      - hashicorp_vault_sts.resources[0].spec.replicas | int == 1
+      - hashicorp_vault_sts.resources[0].spec.volumeClaimTemplates | length == 1
+    fail_msg: "Unexpected Vault StatefulSet layout; refusing destructive deletion."
+    quiet: true
+
+- name: Derive the single owned Raft PVC name
+  ansible.builtin.set_fact:
+    hashicorp_vault_raft_pvc: >-
+      {{ hashicorp_vault_sts.resources[0].spec.volumeClaimTemplates[0].metadata.name }}-{{ vault.helm.release_name }}-0
+
+- name: Verify exact Vault Raft PVC exists
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ vault.namespace }}"
+    name: "{{ hashicorp_vault_raft_pvc }}"
+  register: hashicorp_vault_existing_pvc
+
+- name: Validate exact Vault Raft PVC identity
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_existing_pvc.resources | length == 1
+      - hashicorp_vault_existing_pvc.resources[0].metadata.name == hashicorp_vault_raft_pvc
+    fail_msg: "Expected Vault Raft PVC was not found; refusing destruction."
+    quiet: true
+
+- name: Generate unique escrow archive suffix
+  ansible.builtin.set_fact:
+    hashicorp_vault_archive_suffix: >-
+      {{ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N') }}
+  delegate_to: localhost
+  become: false
+
+- name: Archive previous encrypted Vault escrow
+  ansible.builtin.copy:
+    src: "{{ hashicorp_vault_escrow_file }}"
+    dest: "{{ hashicorp_vault_escrow_file }}.{{ hashicorp_vault_archive_suffix }}.retired"
+    remote_src: true
+    force: false
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: hashicorp_vault_escrow_stat.stat.exists
+
+- name: Remove only Vault Helm release
+  kubernetes.core.helm:
+    name: "{{ vault.helm.release_name }}"
+    release_namespace: "{{ vault.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: absent
+    wait: true
+
+- name: Delete only validated Vault Raft PVC
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ hashicorp_vault_raft_pvc }}"
+    namespace: "{{ vault.namespace }}"
+    state: absent
+    wait: true
+    wait_timeout: 180
+
+- name: Reinstall HashiCorp Vault on empty Raft storage
+  kubernetes.core.helm:
+    name: "{{ vault.helm.release_name }}"
+    chart_ref: "{{ vault.helm.chart_ref }}"
+    chart_version: "{{ vault.helm.version }}"
+    release_namespace: "{{ vault.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: false
+    values: "{{ lookup('template', role_path ~ '/../vault/templates/values.yaml.j2') | from_yaml }}"
+
+- name: Wait for replacement Vault server pod
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    kind: Pod
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.helm.release_name }}-0"
+  register: hashicorp_vault_new_pod
+  until: >-
+    hashicorp_vault_new_pod.resources | length == 1
+    and hashicorp_vault_new_pod.resources[0].status.phase | default('') == 'Running'
+  retries: 90
+  delay: 5
+
+- name: Verify replacement Vault is uninitialized
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/status.yaml"
+
+- name: Refuse unexpected initialized replacement
+  ansible.builtin.assert:
+    that:
+      - not (hashicorp_vault_initialized | bool)
+    fail_msg: "Replacement Vault is unexpectedly initialized."
+    quiet: true
+
+- name: Remove retired escrow from active path
+  ansible.builtin.file:
+    path: "{{ hashicorp_vault_escrow_file }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: hashicorp_vault_escrow_stat.stat.exists
+
+- name: Initialize replacement Vault with fresh encrypted escrow
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/initialize.yaml"
+
+- name: Refresh escrow presence after replacement
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_escrow_file }}"
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_escrow_stat

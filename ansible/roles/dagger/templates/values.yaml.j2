@@ -1,0 +1,24 @@
+
+---
+engine:
+  kind: "{{ dagger.engine.kind }}"
+
+  nodeSelector:
+{{ dagger.engine.node_selector | to_nice_yaml(indent=2) | indent(4, true) }}
+
+  resources:
+{{ dagger.engine.resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
+  env:
+    - name: SSL_CERT_DIR
+      value: "/etc/ssl/certs:/etc/ssl/homelab"
+
+  volumes:
+    - name: homelab-root-ca
+      configMap:
+        name: homelab-root-ca
+
+  volumeMounts:
+    - name: homelab-root-ca
+      mountPath: /etc/ssl/homelab
+      readOnly: true

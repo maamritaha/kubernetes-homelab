@@ -1,0 +1,65 @@
+---
+global:
+  enabled: true
+  tlsDisable: false
+
+injector:
+  enabled: false
+
+server:
+  standalone:
+    enabled: false
+
+  ha:
+    enabled: true
+    replicas: {{ vault.raft.replicas }}
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = true
+
+        api_addr = "https://{{ vault.helm.release_name }}.{{ vault.namespace }}.svc:8200"
+        cluster_addr = "https://{{ vault.helm.release_name }}-0.{{ vault.helm.release_name }}-internal.{{ vault.namespace }}.svc:8201"
+
+        listener "tcp" {
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file = "/vault/userconfig/{{ vault.tls.server_secret_name }}/tls.crt"
+          tls_key_file = "/vault/userconfig/{{ vault.tls.server_secret_name }}/tls.key"
+          tls_client_ca_file = "/vault/userconfig/{{ vault.tls.ca_configmap_name }}/ca.crt"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+        }
+
+        service_registration "kubernetes" {}
+
+  extraVolumes:
+    - type: secret
+      name: {{ vault.tls.server_secret_name }}
+    - type: configMap
+      name: {{ vault.tls.ca_configmap_name }}
+
+  extraEnvironmentVars:
+    VAULT_CACERT: "/vault/userconfig/{{ vault.tls.ca_configmap_name }}/ca.crt"
+    VAULT_TLS_SERVER_NAME: "{{ vault.helm.release_name }}.{{ vault.namespace }}.svc"
+
+  dataStorage:
+    enabled: true
+    size: "{{ vault.storage.size }}"
+    storageClass: "{{ vault.storage.storage_class }}"
+
+  ui:
+    enabled: true
+
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true"
+    port: 8200
+    failureThreshold: 2
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3

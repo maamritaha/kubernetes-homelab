@@ -1,0 +1,167 @@
+
+---
+- name: Validate Dagger configuration
+  ansible.builtin.assert:
+    that:
+      - dagger is defined
+      - dagger.namespace | default('') | length > 0
+      - dagger.helm.release_name | default('') | length > 0
+      - dagger.helm.chart_ref | default('') | length > 0
+      - dagger.helm.version | default('') | length > 0
+      - dagger.engine.node_selector | default({}) | length > 0
+      - forgejo_runner is defined
+      - forgejo_runner.namespace | default('') | length > 0
+      - cert_manager is defined
+      - cert_manager.private_ca.enabled | default(false) | bool
+    quiet: true
+
+# The Root CA certificate is public and managed locally
+# by the cert_manager role.
+# Dagger must never access the Root CA private key.
+- name: Define Homelab Root CA certificate path
+  ansible.builtin.set_fact:
+    dagger_root_ca_certificate_path: >-
+      {{
+        playbook_dir ~
+        '/../../certificates/' ~
+        cluster_environment ~
+        '/root-ca.crt'
+      }}
+
+- name: Check Homelab Root CA certificate
+  ansible.builtin.stat:
+    path: "{{ dagger_root_ca_certificate_path }}"
+  register: dagger_root_ca_certificate
+  delegate_to: localhost
+  become: false
+
+- name: Validate Homelab Root CA certificate
+  ansible.builtin.assert:
+    that:
+      - dagger_root_ca_certificate.stat.exists
+      - dagger_root_ca_certificate.stat.isreg
+      - dagger_root_ca_certificate.stat.readable
+    fail_msg: >-
+      Homelab Root CA certificate is missing or unreadable:
+      {{ dagger_root_ca_certificate_path }}
+    quiet: true
+
+- name: Load Homelab Root CA certificate
+  ansible.builtin.set_fact:
+    dagger_root_ca_certificate_content: >-
+      {{
+        lookup(
+          'ansible.builtin.file',
+          dagger_root_ca_certificate_path
+        )
+      }}
+
+- name: Validate Homelab Root CA certificate content
+  ansible.builtin.assert:
+    that:
+      - dagger_root_ca_certificate_content | length > 0
+      - "'-----BEGIN CERTIFICATE-----' in dagger_root_ca_certificate_content"
+      - "'-----END CERTIFICATE-----' in dagger_root_ca_certificate_content"
+    fail_msg: "Homelab Root CA certificate content is invalid."
+    quiet: true
+
+- name: Create Dagger namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ dagger.namespace }}"
+
+# Only the public certificate is distributed.
+# No Kubernetes Secret or private key is accessed.
+- name: Configure Homelab Root CA for Dagger Engine
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: homelab-root-ca
+        namespace: "{{ dagger.namespace }}"
+      data:
+        ca.crt: "{{ dagger_root_ca_certificate_content }}"
+
+# Forgejo Runner is deployed later in the playbook.
+# Ensure its job namespace exists before configuring RBAC.
+- name: Ensure Forgejo CI namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ forgejo_runner.namespace }}"
+
+- name: Install Dagger Engine
+  kubernetes.core.helm:
+    name: "{{ dagger.helm.release_name }}"
+    chart_ref: "{{ dagger.helm.chart_ref }}"
+    chart_version: "{{ dagger.helm.version }}"
+    release_namespace: "{{ dagger.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: true
+    timeout: 10m
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+
+- name: Wait for Forgejo job ServiceAccount
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: ServiceAccount
+    namespace: "{{ forgejo_runner.namespace }}"
+    name: default
+  register: dagger_forgejo_service_account
+  until: dagger_forgejo_service_account.resources | length == 1
+  retries: 12
+  delay: 5
+
+- name: Validate Forgejo job ServiceAccount
+  ansible.builtin.assert:
+    that:
+      - dagger_forgejo_service_account.resources | length == 1
+    fail_msg: >-
+      ServiceAccount default not found in namespace
+      {{ forgejo_runner.namespace }}.
+    quiet: true
+
+- name: Configure Forgejo jobs access to Dagger Engine
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'runner-access.yaml.j2') | from_yaml_all | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+- name: Get Dagger Engine DaemonSets
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: "{{ dagger.namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/instance={{ dagger.helm.release_name }}"
+  register: dagger_engine_daemonsets
+
+- name: Validate Dagger Engine DaemonSet
+  ansible.builtin.assert:
+    that:
+      - dagger_engine_daemonsets.resources | length == 1
+      - dagger_engine_daemonsets.resources[0].status.desiredNumberScheduled | default(0) | int > 0
+      - >-
+        (dagger_engine_daemonsets.resources[0].status.numberReady | default(0) | int)
+        ==
+        (dagger_engine_daemonsets.resources[0].status.desiredNumberScheduled | default(0) | int)
+    fail_msg: "Dagger Engine DaemonSet is not ready."
+    success_msg: "Dagger Engine is ready."

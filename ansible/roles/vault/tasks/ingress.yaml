@@ -1,0 +1,79 @@
+---
+- name: Read homelab CA ConfigMap for Vault backend TLS
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.tls.ca_configmap_name }}"
+  register: vault_ingress_ca
+
+- name: Validate Vault backend CA
+  ansible.builtin.assert:
+    that:
+      - vault_ingress_ca.resources | length == 1
+      - "'ca.crt' in vault_ingress_ca.resources[0].data"
+
+- name: Configure TLS-verified Traefik transport to Vault
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    apply: true
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: ServersTransport
+      metadata:
+        name: vault-backend
+        namespace: "{{ vault.namespace }}"
+      spec:
+        serverName: "{{ vault.helm.release_name }}.{{ vault.namespace }}.svc"
+        insecureSkipVerify: false
+        rootCAs:
+          - configMap: "{{ vault.tls.ca_configmap_name }}"
+  when: vault.ingress.enabled | bool
+
+- name: Manage Vault ingress TLS certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    apply: true
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ vault.ingress.tls.secret_name }}"
+        namespace: "{{ vault.namespace }}"
+      spec:
+        secretName: "{{ vault.ingress.tls.secret_name }}"
+        dnsNames:
+          - "{{ vault.ingress.host }}"
+        issuerRef:
+          name: "{{ vault.ingress.tls.cluster_issuer }}"
+          kind: ClusterIssuer
+  when: vault.ingress.enabled | bool
+
+- name: Create Vault HTTPS IngressRoute
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    apply: true
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: vault-ingress
+        namespace: "{{ vault.namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        routes:
+          - match: "Host(`{{ vault.ingress.host }}`)"
+            kind: Rule
+            services:
+              - name: "{{ vault.helm.release_name }}"
+                port: 8200
+                scheme: https
+                serversTransport: vault-backend
+        tls:
+          secretName: "{{ vault.ingress.tls.secret_name }}"
+  when: vault.ingress.enabled | bool

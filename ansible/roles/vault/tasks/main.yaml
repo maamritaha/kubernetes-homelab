@@ -1,0 +1,127 @@
+---
+- name: Validate HashiCorp Vault configuration
+  ansible.builtin.assert:
+    that:
+      - vault.namespace | length > 0
+      - vault.helm.version | length > 0
+      - vault.storage.storage_class | length > 0
+      - vault.raft.replicas | int == 1
+      - vault.bootstrap.shares | int >= vault.bootstrap.threshold | int
+      - vault.bootstrap.threshold | int >= 1
+      - cert_manager.private_ca.enabled | bool
+      - vault.tls.cluster_issuer == cert_manager.private_ca.cluster_issuer_name
+    fail_msg: "Invalid Vault configuration. This implementation supports one Raft server only."
+    quiet: true
+
+- name: Create Vault namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vault.namespace }}"
+
+- name: Read existing Homelab Root CA certificate
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - get
+      - secret
+      - "{{ cert_manager.private_ca.secret_name }}"
+      - "--namespace=cert-manager"
+      - '--output=jsonpath={.data.tls\.crt}'
+  register: vault_ca_result
+  changed_when: false
+  no_log: true
+
+- name: Validate Root CA certificate
+  ansible.builtin.command:
+    argv: [openssl, x509, -inform, PEM, -noout, -checkend, "0"]
+    stdin: "{{ vault_ca_result.stdout | b64decode }}"
+  changed_when: false
+  no_log: true
+
+- name: Create Vault trust ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ vault.tls.ca_configmap_name }}"
+        namespace: "{{ vault.namespace }}"
+      data:
+        ca.crt: "{{ vault_ca_result.stdout | b64decode }}"
+
+- name: Request Vault HTTPS certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ vault.tls.certificate_name }}"
+        namespace: "{{ vault.namespace }}"
+      spec:
+        secretName: "{{ vault.tls.server_secret_name }}"
+        duration: "{{ vault.tls.duration }}"
+        renewBefore: "{{ vault.tls.renew_before }}"
+        dnsNames: "{{ vault.tls.dns_names }}"
+        issuerRef:
+          name: "{{ vault.tls.cluster_issuer }}"
+          kind: ClusterIssuer
+
+- name: Wait for Vault HTTPS certificate
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.tls.certificate_name }}"
+  register: vault_certificate
+  until: >-
+    vault_certificate.resources | length == 1 and
+    (vault_certificate.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 45
+  delay: 5
+
+- name: Add HashiCorp Helm repository
+  kubernetes.core.helm_repository:
+    name: "{{ vault.helm.repository.name }}"
+    repo_url: "{{ vault.helm.repository.url }}"
+    state: present
+
+- name: Install HashiCorp Vault with Raft and verified TLS
+  kubernetes.core.helm:
+    name: "{{ vault.helm.release_name }}"
+    chart_ref: "{{ vault.helm.chart_ref }}"
+    chart_version: "{{ vault.helm.version }}"
+    release_namespace: "{{ vault.namespace }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    state: present
+    wait: false
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+
+- name: Wait for Vault server pod to start
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/kubernetes/admin.conf
+    kind: Pod
+    namespace: "{{ vault.namespace }}"
+    name: "{{ vault.helm.release_name }}-0"
+  register: vault_pod
+  until: >-
+    vault_pod.resources | length == 1 and
+    vault_pod.resources[0].status.phase | default('') == 'Running'
+  retries: 90
+  delay: 5
+
+- name: Configure Vault HTTPS ingress
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/ingress.yaml"
+  when: vault.ingress.enabled | bool

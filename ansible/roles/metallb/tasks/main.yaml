@@ -21,6 +21,9 @@
       frrk8s:
         enabled: false
 
+- name: Wait for MetalLB readiness
+  ansible.builtin.import_tasks: wait-ready.yaml
+
 - name: Configure MetalLB IP address pool
   kubernetes.core.k8s:
     kubeconfig: /etc/kubernetes/admin.conf
@@ -33,6 +36,10 @@
         namespace: metallb-system
       spec:
         addresses: "{{ metallb.address_pool.addresses }}"
+  register: metallb_ip_pool_result
+  until: metallb_ip_pool_result is succeeded
+  retries: 12
+  delay: 5
 
 - name: Configure MetalLB L2 advertisement
   kubernetes.core.k8s:

@@ -52,6 +52,14 @@ metallb:
   version: "0.16.1"
   repository_url: "https://metallb.github.io/metallb"
 
+  namespace: metallb-system
+
+  controller:
+    deployment_name: metallb-controller
+
+  webhook:
+    service_name: metallb-webhook-service
+
   address_pool:
     name: dev-pool
     addresses:
@@ -311,9 +319,74 @@ forgejo_runner:
 
 dagger:
   namespace: developer-tools
+
+  helm:
+    release_name: dagger
+    chart_ref: oci://registry.dagger.io/dagger-helm
+    version: "0.21.8"
+
   engine:
-    enabled: true
-  cache:
-    enabled: true
+    kind: DaemonSet
+
+    node_selector:
+      kubernetes.io/hostname: dev-worker-1
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+
+
+vault:
+  enabled: true
+  namespace: vault
+  helm:
+    release_name: vault
+    chart_ref: hashicorp/vault
+    version: "0.30.1"
+    repository:
+      name: hashicorp
+      url: https://helm.releases.hashicorp.com
+  storage:
     storage_class: longhorn
-    size: 10Gi
+    size: 1Gi
+  raft:
+    replicas: 1
+  ingress:
+    enabled: true
+    class_name: traefik
+    host: vault.dev.homelab
+    tls:
+      enabled: true
+      cluster_issuer: homelab-ca
+      secret_name: vault-ingress-tls
+  tls:
+    ca_configmap_name: homelab-root-ca
+    server_secret_name: vault-server-tls
+    certificate_name: vault-server
+    cluster_issuer: homelab-ca
+    duration: 2160h
+    renew_before: 360h
+    dns_names:
+      - vault.vault.svc
+      - vault.vault.svc.cluster.local
+      - vault-0.vault-internal.vault.svc
+      - vault-0.vault-internal.vault.svc.cluster.local
+  bootstrap:
+    shares: 3
+    threshold: 2
+    reinstall_with_project_keys: false
+    confirm_data_destruction: false
+
+forgejo_identity:
+  username: homelab-ci
+  email: homelab-ci@dev.homelab
+
+  vault:
+    kv_mount: secret
+    secret_path: platform/forgejo/homelab-ci
+
+  recovery:
+    create_account_from_existing_secret: true

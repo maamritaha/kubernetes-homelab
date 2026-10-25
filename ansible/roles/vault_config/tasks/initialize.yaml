@@ -1,0 +1,149 @@
+---
+- name: Ensure local secrets directory exists
+  ansible.builtin.file:
+    path: "{{ hashicorp_vault_escrow_file | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Preflight native Ansible Vault encryption
+  ansible.builtin.command:
+    argv:
+      - ansible-vault
+      - encrypt_string
+      - --vault-password-file
+      - "{{ hashicorp_vault_password_file }}"
+      - --encrypt-vault-id
+      - default
+      - --stdin-name
+      - hashicorp_vault_encryption_test
+    stdin: "vault-bootstrap-encryption-test"
+    stdin_add_newline: false
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_encryption_test
+  changed_when: false
+  no_log: true
+
+- name: Validate native Ansible Vault encryption output
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_encryption_test.rc == 0
+      - "'hashicorp_vault_encryption_test: !vault |' in hashicorp_vault_encryption_test.stdout"
+      - "'$ANSIBLE_VAULT;' in hashicorp_vault_encryption_test.stdout"
+    fail_msg: "Native Ansible Vault encryption preflight failed; initialization refused."
+    quiet: true
+  no_log: true
+
+- name: Check escrow does not exist before initialization
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_escrow_file }}"
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_escrow_before_init
+
+- name: Refuse to overwrite existing encrypted bootstrap keys
+  ansible.builtin.assert:
+    that:
+      - not hashicorp_vault_escrow_before_init.stat.exists
+    fail_msg: "Encrypted Vault escrow already exists; refusing initialization."
+    quiet: true
+
+- name: Initialize HashiCorp Vault with Shamir keys
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - "{{ vault.namespace }}"
+      - exec
+      - "{{ vault.helm.release_name }}-0"
+      - --
+      - env
+      - "VAULT_ADDR=https://{{ vault.helm.release_name }}.{{ vault.namespace }}.svc:8200"
+      - "VAULT_CACERT=/vault/userconfig/{{ vault.tls.ca_configmap_name }}/ca.crt"
+      - vault
+      - operator
+      - init
+      - -format=json
+      - "-key-shares={{ vault.bootstrap.shares }}"
+      - "-key-threshold={{ vault.bootstrap.threshold }}"
+  register: hashicorp_vault_init_result
+  no_log: true
+
+- name: Encrypt bootstrap JSON using native Ansible Vault
+  ansible.builtin.command:
+    argv:
+      - ansible-vault
+      - encrypt_string
+      - --vault-password-file
+      - "{{ hashicorp_vault_password_file }}"
+      - --encrypt-vault-id
+      - default
+      - --stdin-name
+      - hashicorp_vault_bootstrap
+    stdin: >-
+      {{
+        {
+          'unseal_keys_b64': (hashicorp_vault_init_result.stdout | from_json).unseal_keys_b64,
+          'root_token': (hashicorp_vault_init_result.stdout | from_json).root_token
+        } | to_json
+      }}
+    stdin_add_newline: false
+  register: hashicorp_vault_encrypted_bootstrap
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: true
+
+- name: Validate encrypted bootstrap output
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_encrypted_bootstrap.rc == 0
+      - "'hashicorp_vault_bootstrap: !vault |' in hashicorp_vault_encrypted_bootstrap.stdout"
+      - "'$ANSIBLE_VAULT;' in hashicorp_vault_encrypted_bootstrap.stdout"
+    fail_msg: "Failed to encrypt Vault bootstrap credentials."
+    quiet: true
+  no_log: true
+
+- name: Persist encrypted Shamir shares and root token
+  ansible.builtin.copy:
+    dest: "{{ hashicorp_vault_escrow_file }}"
+    content: "---\n{{ hashicorp_vault_encrypted_bootstrap.stdout }}\n"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Verify encrypted escrow was persisted
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_escrow_file }}"
+  delegate_to: localhost
+  become: false
+  register: hashicorp_vault_saved_escrow
+
+- name: Assert encrypted escrow exists
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_saved_escrow.stat.exists
+      - hashicorp_vault_saved_escrow.stat.isreg
+      - hashicorp_vault_saved_escrow.stat.size | int > 0
+    fail_msg: "Vault was initialized but its encrypted escrow was not persisted."
+    quiet: true
+
+- name: Load encrypted bootstrap JSON
+  ansible.builtin.include_vars:
+    file: "{{ hashicorp_vault_escrow_file }}"
+  no_log: true
+
+- name: Unseal newly initialized Vault
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/unseal.yaml"
+
+- name: Fail if newly initialized Vault remains sealed
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_unsealed | bool
+    fail_msg: "Vault initialized but could not be unsealed. Preserve the encrypted escrow."
+    quiet: true

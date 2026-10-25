@@ -1,0 +1,29 @@
+---
+- name: Read Vault status through TLS-verified CLI
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - -n
+      - "{{ vault.namespace }}"
+      - exec
+      - "{{ vault.helm.release_name }}-0"
+      - --
+      - env
+      - "VAULT_ADDR=https://{{ vault.helm.release_name }}.{{ vault.namespace }}.svc:8200"
+      - "VAULT_CACERT=/vault/userconfig/{{ vault.tls.ca_configmap_name }}/ca.crt"
+      - vault
+      - status
+      - -format=json
+  register: hashicorp_vault_status_result
+  changed_when: false
+  failed_when: >-
+    hashicorp_vault_status_result.rc not in [0, 2] or
+    (hashicorp_vault_status_result.stdout | from_json).initialized is not defined
+  no_log: true
+
+- name: Record Vault status
+  ansible.builtin.set_fact:
+    hashicorp_vault_initialized: "{{ (hashicorp_vault_status_result.stdout | from_json).initialized | bool }}"
+    hashicorp_vault_sealed: "{{ (hashicorp_vault_status_result.stdout | from_json).sealed | bool }}"
+  no_log: true

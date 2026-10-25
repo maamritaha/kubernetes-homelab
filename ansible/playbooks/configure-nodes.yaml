@@ -60,9 +60,11 @@
   roles:
     - worker
 
+
 - name: Wait for Kubernetes cluster readiness
   hosts: control_plane
   become: true
+
   tasks:
     - name: Wait for all Kubernetes nodes to become ready
       kubernetes.core.k8s_info:
@@ -193,6 +195,40 @@
   roles:
     - longhorn
 
+
+- name: Install and initialize HashiCorp Vault
+  hosts: control_plane
+  become: true
+  tags:
+    - vault
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+      tags:
+        - always
+
+  roles:
+    - vault
+    - vault_config
+
+
+- name: Deploy Dagger Engine
+  hosts: control_plane
+  become: true
+  tags:
+    - dagger
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+
+  roles:
+    - dagger
+
+
 - name: Install SeaweedFS
   hosts: control_plane
   become: true
@@ -206,6 +242,7 @@
 
   roles:
     - seaweedfs
+
 
 - name: Install CloudNativePG
   hosts: control_plane
@@ -221,6 +258,7 @@
   roles:
     - cloudnative_pg
 
+
 - name: Deploy PostgreSQL infrastructure
   hosts: control_plane
   become: true
@@ -234,6 +272,7 @@
 
   roles:
     - postgresql
+
 
 - name: Install RabbitMQ Operators
   hosts: control_plane
@@ -250,6 +289,7 @@
   roles:
     - rabbitmq_operator
 
+
 - name: Deploy RabbitMQ infrastructure
   hosts: control_plane
   become: true
@@ -264,6 +304,7 @@
   roles:
     - rabbitmq
 
+
 - name: Configure Forgejo BuildKit AppArmor on workers
   hosts: workers
   become: true
@@ -275,6 +316,7 @@
       ansible.builtin.import_role:
         name: forgejo_runner
         tasks_from: apparmor
+
 
 - name: Deploy Forgejo
   hosts: control_plane
@@ -289,6 +331,23 @@
 
   roles:
     - forgejo
+
+
+- name: Configure Forgejo technical identity
+  hosts: control_plane
+  become: true
+  tags:
+    - forgejo_identity
+
+  pre_tasks:
+    - name: Load environment variables
+      ansible.builtin.include_vars:
+        file: "../../environments/{{ cluster_environment }}/vars.yaml"
+      tags:
+        - always
+
+  roles:
+    - forgejo_identity
 
 - name: Deploy Forgejo Runner
   hosts: control_plane

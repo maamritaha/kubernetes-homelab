@@ -1,0 +1,5 @@
+*
+!Containerfile
+!python-requirements.txt
+!requirements.yaml
+!.containerignore
